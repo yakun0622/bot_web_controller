@@ -1,0 +1,13 @@
+[Unit]
+Description=Bot Web Controller RTSP to MJPEG proxy
+After=network.target
+
+[Service]
+Type=simple
+Environment=RTSP_PROXY_PORT=8081
+ExecStart=/usr/bin/node /var/www/bot-web-controller/server/rtsp-proxy.mjs
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
