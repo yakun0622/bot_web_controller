@@ -1,76 +1,87 @@
 import React, { useState } from 'react';
-import { Play, Square, Save, Check } from 'lucide-react';
+import { Check, Play, Save, Square } from 'lucide-react';
+import {
+  Button,
+  Card,
+  FormField,
+  Input,
+  StatusBadge,
+  useAbcConfig
+} from '@abc-design/react';
 import { rosService } from '../services/rosService';
 
 export default function MappingControl({ isRunning }) {
+  const { toast } = useAbcConfig();
   const [mapSaveName, setMapSaveName] = useState('my_room_map');
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const handleSaveMap = (e) => {
     e.preventDefault();
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2500);
+    const clean = mapSaveName.trim();
+    if (!clean) {
+      toast.warning('请输入要保存的地图名称');
+      return;
+    }
+    const ok = rosService.saveMap(clean);
+    if (ok) {
+      setSavedSuccess(true);
+      toast.success(`栅格地图「${clean}」已保存并加入地图库`);
+      setTimeout(() => setSavedSuccess(false), 2200);
+    }
   };
 
   return (
-    <div className="card">
-      <div className="card-header">
-        <span>建图控制</span>
-      </div>
-
-      <div className="card-body">
-        {/* Toggle Mapping Button */}
-        <button
-          className={`btn ${isRunning ? 'btn-danger-light' : 'btn-primary'}`}
-          style={{ width: '100%', padding: '10px' }}
-          onClick={() => rosService.toggleMappingMode()}
-        >
-          {isRunning ? <Square size={16} /> : <Play size={16} />}
-          <span>{isRunning ? '停止建图' : '开始建图'}</span>
-        </button>
-
-        {/* Status Indicator */}
-        <div
-          style={{
-            fontSize: 12,
-            color: isRunning ? '#15803d' : '#64748b',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6
+    <Card
+      size="sm"
+      padding="sm"
+      title="SLAM 建图控制"
+      extra={
+        <StatusBadge
+          status={isRunning ? 'running' : 'stopped'}
+          label={isRunning ? '建图中' : '未运行'}
+        />
+      }
+    >
+      <div className="space-y-3">
+        <Button
+          size="sm"
+          variant={isRunning ? 'danger' : 'primary'}
+          block
+          leftIcon={isRunning ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+          onClick={() => {
+            rosService.toggleMappingMode();
+            toast.info(isRunning ? '已停止 SLAM 建图节点' : '已启动 SLAM 建图节点');
           }}
         >
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              backgroundColor: isRunning ? '#10b981' : '#cbd5e1',
-              display: 'inline-block'
-            }}
-          />
-          <span>{isRunning ? '建图节点运行中' : '建图节点未运行'}</span>
-        </div>
+          {isRunning ? '停止 SLAM 建图' : '开始 SLAM 建图'}
+        </Button>
 
-        {/* Save Map Inputs */}
-        <form onSubmit={handleSaveMap} style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-          <input
-            type="text"
-            className="form-input"
-            style={{ flex: 1, fontSize: 12 }}
-            value={mapSaveName}
-            onChange={(e) => setMapSaveName(e.target.value)}
-            placeholder="地图保存名称..."
-          />
-          <button
-            type="submit"
-            className="btn btn-outline"
-            style={{ padding: '6px 10px', fontSize: 12 }}
-          >
-            {savedSuccess ? <Check size={14} color="#10b981" /> : <Save size={14} />}
-            <span>{savedSuccess ? '已保存' : '保存'}</span>
-          </button>
+        <form onSubmit={handleSaveMap} className="space-y-1.5">
+          <FormField label="持久化当前栅格地图">
+            <div className="flex items-center gap-1.5">
+              <div className="min-w-0 flex-1">
+                <Input
+                  size="sm"
+                  value={mapSaveName}
+                  onChange={(e) => setMapSaveName(e.target.value)}
+                  placeholder="输入地图保存名称..."
+                  allowClear
+                />
+              </div>
+              <Button
+                type="submit"
+                size="sm"
+                variant={savedSuccess ? 'success' : 'outline'}
+                leftIcon={
+                  savedSuccess ? <Check className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />
+                }
+              >
+                {savedSuccess ? '已存' : '保存'}
+              </Button>
+            </div>
+          </FormField>
         </form>
       </div>
-    </div>
+    </Card>
   );
 }

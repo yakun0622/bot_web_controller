@@ -15,6 +15,7 @@ class ROSService {
     this.status = 'disconnected'; // 'connected' | 'connecting' | 'disconnected'
     this.isSimulated = false; // Demo / Simulation mode
     this.listeners = new Set();
+    this.logSeq = 0;
 
     // Telemetry state
     this.telemetry = {
@@ -37,13 +38,36 @@ class ROSService {
         current: -1.2,
         isCharging: false,
         powerSupplyStatus: 2 // 1: CHARGING, 2: DISCHARGING, 3: NOT_CHARGING, 4: FULL
-      }
+      },
+      logs: []
     };
 
     // Initialize mock map for simulation mode
     this.initMockMap();
+    this.addLog('info', '机器人中控服务已初始化', { defaultMap: 'test_room' });
     this.simInterval = null;
     this.connectionTimer = null;
+  }
+
+  addLog(level, message, detail) {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const createdAt = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const entry = {
+      seq: ++this.logSeq,
+      level,
+      message,
+      detail,
+      created_at: createdAt
+    };
+    const nextLogs = [...this.telemetry.logs, entry];
+    this.telemetry.logs = nextLogs.length > 200 ? nextLogs.slice(-200) : nextLogs;
+  }
+
+  clearLogs() {
+    this.telemetry.logs = [];
+    this.addLog('info', '日志缓冲区已清空');
+    this.notify();
   }
 
   initMockMap() {
@@ -56,16 +80,16 @@ class ROSService {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const idx = y * width + x;
-        // Outer walls
         if (x < 5 || x > width - 6 || y < 5 || y > height - 6) {
           data[idx] = 100;
-        } else if ((x >= 25 && x <= 28 && y >= 20 && y <= 80) ||
-                   (x >= 65 && x <= 95 && y >= 35 && y <= 38) ||
-                   (x >= 50 && x <= 53 && y >= 60 && y <= 105) ||
-                   (x >= 75 && x <= 78 && y >= 15 && y <= 55)) {
-          data[idx] = 100; // Inner obstacles/walls
+        } else if (
+          (x >= 25 && x <= 28 && y >= 20 && y <= 80) ||
+          (x >= 65 && x <= 95 && y >= 35 && y <= 38) ||
+          (x >= 50 && x <= 53 && y >= 60 && y <= 105) ||
+          (x >= 75 && x <= 78 && y >= 15 && y <= 55)
+        ) {
+          data[idx] = 100;
         } else {
-          // Free space with subtle gradient/inflation
           data[idx] = 0;
         }
       }
@@ -76,12 +100,11 @@ class ROSService {
         width,
         height,
         resolution,
-        origin: { position: { x: -width * resolution / 2, y: -height * resolution / 2 } }
+        origin: { position: { x: (-width * resolution) / 2, y: (-height * resolution) / 2 } }
       },
       data
     };
 
-    // Default simulation robot pose
     this.telemetry.robotPose = { x: 0, y: -0.5, theta: Math.PI / 4 };
     this.generateMockScan();
   }
@@ -110,7 +133,9 @@ class ROSService {
   }
 
   notify() {
-    this.listeners.forEach((fn) => fn({ ...this.telemetry, status: this.status, isSimulated: this.isSimulated }));
+    this.listeners.forEach((fn) =>
+      fn({ ...this.telemetry, status: this.status, isSimulated: this.isSimulated })
+    );
   }
 
   connect(url = 'ws://192.168.2.88:9090', { fallbackToSimulation = false, timeoutMs = 5000 } = {}) {
@@ -130,6 +155,7 @@ class ROSService {
     }
 
     this.status = 'connecting';
+    this.addLog('info', `正在连接 ROS Bridge: ${url}`, { timeoutMs });
     this.notify();
 
     try {
@@ -146,9 +172,11 @@ class ROSService {
         ros.close();
 
         if (fallbackToSimulation) {
+          this.addLog('warn', `ROS 连接未就绪，已自动切换至内置仿真模式 (${url})`);
           this.setSimulationMode(true);
         } else {
           this.status = 'disconnected';
+          this.addLog('error', `ROS 连接断开: ${url}`);
           this.notify();
         }
       };
@@ -163,8 +191,8 @@ class ROSService {
         this.connectionTimer = null;
         console.log('Connected to ROS Bridge');
         this.status = 'connected';
+        this.addLog('info', `已成功连接至 ROS Bridge (${url})`);
 
-        // Set up publishers
         this.cmdVelTopic = new ROSLIB.Topic({
           ros,
           name: '/cmd_vel',
@@ -183,7 +211,6 @@ class ROSService {
           messageType: 'geometry_msgs/PoseWithCovarianceStamped'
         });
 
-        // Subscribe to map
         this.mapTopic = new ROSLIB.Topic({
           ros,
           name: '/map',
@@ -195,7 +222,6 @@ class ROSService {
           this.notify();
         });
 
-        // Subscribe to scan
         this.scanTopic = new ROSLIB.Topic({
           ros,
           name: '/scan',
@@ -208,8 +234,10 @@ class ROSService {
           for (let i = 0; i < scan.ranges.length; i++) {
             const r = scan.ranges[i];
             if (r >= scan.range_min && r <= scan.range_max) {
-              const px = this.telemetry.robotPose.x + r * Math.cos(this.telemetry.robotPose.theta + angle);
-              const py = this.telemetry.robotPose.y + r * Math.sin(this.telemetry.robotPose.theta + angle);
+              const px =
+                this.telemetry.robotPose.x + r * Math.cos(this.telemetry.robotPose.theta + angle);
+              const py =
+                this.telemetry.robotPose.y + r * Math.sin(this.telemetry.robotPose.theta + angle);
               scanPoints.push({ x: px, y: py, dist: r });
             }
             angle += scan.angle_increment;
@@ -218,7 +246,6 @@ class ROSService {
           this.notify();
         });
 
-        // Subscribe to pose
         this.poseTopic = new ROSLIB.Topic({
           ros,
           name: '/amcl_pose',
@@ -235,7 +262,6 @@ class ROSService {
           this.notify();
         });
 
-        // Subscribe to path
         this.pathTopic = new ROSLIB.Topic({
           ros,
           name: '/move_base/NavfnROS/plan',
@@ -250,7 +276,6 @@ class ROSService {
           this.notify();
         });
 
-        // Subscribe to battery (/battery_state)
         this.batteryTopic = new ROSLIB.Topic({
           ros,
           name: '/battery_state',
@@ -283,9 +308,11 @@ class ROSService {
     } catch (e) {
       console.error('ROS connection error:', e);
       if (fallbackToSimulation) {
+        this.addLog('warn', 'ROS WebSocket 初始化异常，已回退至仿真模式');
         this.setSimulationMode(true);
       } else {
         this.status = 'disconnected';
+        this.addLog('error', `ROS 连接异常: ${e?.message || '未知错误'}`);
         this.notify();
       }
     }
@@ -317,10 +344,12 @@ class ROSService {
     if (enable) {
       this.initMockMap();
       this.status = 'connected';
+      this.addLog('info', '仿真引擎已启动 (10Hz 运动学与激光雷达模拟)');
       this.startSimLoop();
     } else {
       this.stopSimLoop();
       this.status = 'disconnected';
+      this.addLog('info', '已退出仿真模式');
     }
     this.notify();
   }
@@ -341,7 +370,12 @@ class ROSService {
       let newY = robotPose.y + linearVel.x * Math.sin(newTheta) * dt;
 
       // Simulated navigation movement
-      if (this.telemetry.navigationRunning && targetPose && linearVel.x === 0 && angularVel.z === 0) {
+      if (
+        this.telemetry.navigationRunning &&
+        targetPose &&
+        linearVel.x === 0 &&
+        angularVel.z === 0
+      ) {
         const dx = targetPose.x - newX;
         const dy = targetPose.y - newY;
         const dist = Math.hypot(dx, dy);
@@ -362,12 +396,11 @@ class ROSService {
       }
 
       // Simulate battery voltage and percentage slight fluctuations / drain
-      if (simTicks % 50 === 0) { // every 5s
+      if (simTicks % 50 === 0) {
         let newPct = battery.percentage;
         if (battery.isCharging) {
           newPct = Math.min(100, newPct + 1);
         } else {
-          // Slow drain
           newPct = Math.max(5, newPct - 1);
         }
         const volt = (11.0 + (newPct / 100) * 1.6).toFixed(1);
@@ -394,6 +427,10 @@ class ROSService {
   toggleSimCharging() {
     if (this.isSimulated) {
       this.telemetry.battery.isCharging = !this.telemetry.battery.isCharging;
+      this.addLog(
+        'info',
+        this.telemetry.battery.isCharging ? '模拟电源：已接入充电桩' : '模拟电源：已断开充电器'
+      );
       this.notify();
     }
   }
@@ -413,6 +450,15 @@ class ROSService {
     this.notify();
   }
 
+  emergencyStop() {
+    this.telemetry.targetPose = null;
+    this.telemetry.pathData = [];
+    this.telemetry.remainingDistance = 0;
+    this.telemetry.estimatedTime = 0;
+    this.addLog('warn', '触发紧急制动 (/cmd_vel 归零，清除活动导航目标)');
+    this.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+  }
+
   // Set Nav Goal (/move_base_simple/goal)
   setGoalPose(x, y, theta = 0) {
     this.telemetry.targetPose = { x, y, theta };
@@ -420,21 +466,27 @@ class ROSService {
     const rx = this.telemetry.robotPose.x;
     const ry = this.telemetry.robotPose.y;
 
-    const points = [];
-    const steps = 20;
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const cx = (rx + x) / 2 + Math.sin(t * Math.PI) * 0.3;
-      const cy = (ry + y) / 2 - Math.cos(t * Math.PI) * 0.3;
-      const px = (1 - t) * (1 - t) * rx + 2 * (1 - t) * t * cx + t * t * x;
-      const py = (1 - t) * (1 - t) * ry + 2 * (1 - t) * t * cy + t * t * y;
-      points.push({ x: px, y: py });
+    if (this.isSimulated) {
+      const points = [];
+      const steps = 20;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const cx = (rx + x) / 2 + Math.sin(t * Math.PI) * 0.3;
+        const cy = (ry + y) / 2 - Math.cos(t * Math.PI) * 0.3;
+        const px = (1 - t) * (1 - t) * rx + 2 * (1 - t) * t * cx + t * t * x;
+        const py = (1 - t) * (1 - t) * ry + 2 * (1 - t) * t * cy + t * t * y;
+        points.push({ x: px, y: py });
+      }
+      this.telemetry.pathData = points;
     }
-    this.telemetry.pathData = points;
 
     const dist = Math.hypot(x - rx, y - ry);
     this.telemetry.remainingDistance = dist;
     this.telemetry.estimatedTime = dist / 0.3;
+
+    this.addLog('info', `下发导航目标点 (${x.toFixed(2)}, ${y.toFixed(2)})`, {
+      distance: `${dist.toFixed(2)}m`
+    });
 
     if (this.status === 'connected' && this.goalTopic && !this.isSimulated) {
       const poseMsg = new ROSLIB.Message({
@@ -460,6 +512,7 @@ class ROSService {
   // Set Initial Pose (/initialpose)
   setInitialPose(x, y, theta = 0) {
     this.telemetry.robotPose = { x, y, theta };
+    this.addLog('info', `标定机器人初始位姿 (${x.toFixed(2)}, ${y.toFixed(2)})`);
     if (this.status === 'connected' && this.initialPoseTopic && !this.isSimulated) {
       const poseMsg = new ROSLIB.Message({
         header: {
@@ -481,16 +534,37 @@ class ROSService {
 
   toggleMappingMode() {
     this.telemetry.mappingRunning = !this.telemetry.mappingRunning;
+    this.addLog(
+      'info',
+      this.telemetry.mappingRunning ? 'SLAM 建图模式已开启' : 'SLAM 建图模式已停止'
+    );
     this.notify();
+  }
+
+  saveMap(mapName) {
+    const cleanName = (mapName || '').trim();
+    if (!cleanName) return false;
+    if (!this.telemetry.availableMaps.includes(cleanName)) {
+      this.telemetry.availableMaps = [cleanName, ...this.telemetry.availableMaps];
+    }
+    this.telemetry.selectedMap = cleanName;
+    this.addLog('info', `栅格地图已保存并切换为: ${cleanName}`);
+    this.notify();
+    return true;
   }
 
   toggleNavigationMode() {
     this.telemetry.navigationRunning = !this.telemetry.navigationRunning;
+    this.addLog(
+      'info',
+      this.telemetry.navigationRunning ? '自主导航节点已启动' : '自主导航节点已暂停'
+    );
     this.notify();
   }
 
   setSelectedMap(mapName) {
     this.telemetry.selectedMap = mapName;
+    this.addLog('info', `切换当前活动地图: ${mapName}`);
     this.notify();
   }
 }

@@ -15,9 +15,21 @@ function rtspProxyPlugin() {
 }
 
 export default defineConfig({
-  plugins: [react(), rtspProxyPlugin()],
+  plugins: [react({ exclude: [/node_modules/, /vendor\//] }), rtspProxyPlugin()],
   server: {
     port: 3000,
     host: true
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-abc': ['@abc-design/react'],
+          'vendor-icons': ['lucide-react'],
+          'vendor-ros': ['roslib']
+        }
+      }
+    }
   }
 });

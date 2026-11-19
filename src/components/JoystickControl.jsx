@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { ShieldAlert, Keyboard, Battery, BatteryCharging } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Battery, BatteryCharging, Gauge, Keyboard, Move, RotateCw, ShieldAlert, Zap } from 'lucide-react';
+import { Button, Card, StatCard, StatusTag, useAbcConfig } from '@abc-design/react';
 import { rosService } from '../services/rosService';
 
 export default function JoystickControl({ linearVel, angularVel, battery }) {
+  const { toast } = useAbcConfig();
   const joystickRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [knobPos, setKnobPos] = useState({ x: 0, y: 0 });
@@ -11,7 +13,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
   const [maxLinear, setMaxLinear] = useState(0.5); // m/s
   const [maxAngular, setMaxAngular] = useState(1.0); // rad/s
 
-  const radius = 75; // outer circle radius
+  const radius = 64;
 
   const updateVelFromOffset = (dx, dy) => {
     const normX = dx / radius;
@@ -27,12 +29,12 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
   };
 
   const handlePointerDown = (e) => {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
     setIsDragging(true);
-    handlePointerMove(e);
+    updatePointerPosition(e);
   };
 
-  const handlePointerMove = (e) => {
-    if (!isDragging && e.type !== 'pointerdown') return;
+  const updatePointerPosition = (e) => {
     if (!joystickRef.current) return;
 
     const rect = joystickRef.current.getBoundingClientRect();
@@ -52,24 +54,31 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
     updateVelFromOffset(dx, dy);
   };
 
-  const handlePointerUp = () => {
-    setIsDragging(false);
-    setKnobPos({ x: 0, y: 0 });
-    rosService.publishTwist(
-      { x: 0, y: 0, z: 0 },
-      { x: 0, y: 0, z: 0 }
-    );
+  const handlePointerMove = (e) => {
+    if (!isDragging) return;
+    updatePointerPosition(e);
   };
 
-  // Keyboard controls listener (WASD / Arrows)
+  const handlePointerUp = () => {
+    if (!isDragging) return;
+    setIsDragging(false);
+    setKnobPos({ x: 0, y: 0 });
+    rosService.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+  };
+
+  // Keyboard controls listener (WASD / Arrows / Space E-Stop)
   useEffect(() => {
     const activeKeys = new Set();
 
     const handleKeyDown = (e) => {
-      if (['Input', 'Select', 'Textarea'].includes(document.activeElement?.tagName)) return;
+      const tag = document.activeElement?.tagName?.toUpperCase();
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) {
+        return;
+      }
 
       const key = e.key.toLowerCase();
       if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
+        if (key === ' ') e.preventDefault();
         activeKeys.add(key);
 
         let lx = 0;
@@ -81,8 +90,8 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
         if (activeKeys.has('d') || activeKeys.has('arrowright')) az -= maxAngular;
 
         if (activeKeys.has(' ')) {
-          lx = 0;
-          az = 0;
+          rosService.emergencyStop();
+          return;
         }
 
         rosService.publishTwist(
@@ -94,13 +103,11 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
 
     const handleKeyUp = (e) => {
       const key = e.key.toLowerCase();
+      if (!activeKeys.has(key)) return;
       activeKeys.delete(key);
 
       if (activeKeys.size === 0) {
-        rosService.publishTwist(
-          { x: 0, y: 0, z: 0 },
-          { x: 0, y: 0, z: 0 }
-        );
+        rosService.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
       }
     };
 
@@ -112,102 +119,138 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
     };
   }, [maxLinear, maxAngular]);
 
+  const pct = battery?.percentage ?? 86;
+
   return (
-    <div className="card">
-      <div className="card-header">
-        <span>摇杆控制</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748b' }}>
-          <Keyboard size={13} />
-          <span>WASD / 方向键</span>
-        </div>
-      </div>
-      <div className="card-body" style={{ alignItems: 'center' }}>
-        {/* Interactive Joystick Area */}
+    <Card
+      size="sm"
+      padding="sm"
+      title="底盘运动遥控"
+      extra={
+        <StatusTag size="xs" tone="neutral" dot={false} icon={<Keyboard className="h-3 w-3" />}>
+          WASD / 方向键
+        </StatusTag>
+      }
+    >
+      <div className="flex flex-col items-center gap-3">
+        {/* Token-styled Interactive Joystick Pad */}
         <div
           ref={joystickRef}
-          className="joystick-outer"
+          className="bot-joystick-pad"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
-          onPointerLeave={handlePointerUp}
+          onPointerCancel={handlePointerUp}
         >
-          {/* Inner Knob */}
+          <span className="bot-joystick-crosshair-h" aria-hidden="true" />
+          <span className="bot-joystick-crosshair-v" aria-hidden="true" />
+          <span className="bot-joystick-ring" aria-hidden="true" />
           <div
-            className="joystick-knob"
+            className="bot-joystick-knob"
             style={{
-              transform: `translate(${knobPos.x}px, ${knobPos.y}px)`,
-              transition: isDragging ? 'none' : 'transform 0.15s ease-out'
+              transform: `translate3d(${knobPos.x}px, ${knobPos.y}px, 0)`,
+              transition: isDragging ? 'none' : 'transform 0.16s cubic-bezier(0.16, 1, 0.3, 1)'
             }}
           >
-            ●
+            <Move className="h-4 w-4 opacity-90" />
           </div>
         </div>
 
-        {/* Speed & Battery Telemetry displays */}
-        <div className="speed-grid" style={{ width: '100%' }}>
-          <div className="speed-box">
-            <div className="label">线速度 m/s</div>
-            <div className="value">{(linearVel?.x || 0).toFixed(2)}</div>
-          </div>
-          <div className="speed-box">
-            <div className="label">角速度 rad/s</div>
-            <div className="value">{(angularVel?.z || 0).toFixed(2)}</div>
-          </div>
-          <div className="speed-box">
-            <div className="label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-              {battery?.isCharging ? <BatteryCharging size={12} color="#10b981" /> : <Battery size={12} />}
-              <span>电池电量</span>
-            </div>
-            <div className="value" style={{ color: battery?.percentage <= 20 ? '#ef4444' : '#10b981' }}>
-              {battery?.percentage ?? 86}%
-            </div>
-          </div>
-          <div className="speed-box">
-            <div className="label">工作电压 V</div>
-            <div className="value" style={{ color: '#0f172a' }}>
-              {(battery?.voltage ?? 12.4).toFixed(1)}V
-            </div>
-          </div>
-        </div>
+        {/* 2x2 ABC Design StatCard Grid */}
+        <dl className="grid w-full grid-cols-2 gap-2">
+          <StatCard
+            size="sm"
+            tone={Math.abs(linearVel?.x || 0) > 0.01 ? 'primary' : 'default'}
+            label="线速度 (m/s)"
+            icon={<Gauge className="h-3.5 w-3.5" />}
+            value={(linearVel?.x || 0).toFixed(2)}
+            mono
+          />
+          <StatCard
+            size="sm"
+            tone={Math.abs(angularVel?.z || 0) > 0.01 ? 'primary' : 'default'}
+            label="角速度 (rad/s)"
+            icon={<RotateCw className="h-3.5 w-3.5" />}
+            value={(angularVel?.z || 0).toFixed(2)}
+            mono
+          />
+          <StatCard
+            size="sm"
+            tone={pct <= 20 ? 'danger' : battery?.isCharging ? 'success' : 'default'}
+            label="电池电量"
+            icon={
+              battery?.isCharging ? (
+                <BatteryCharging className="h-3.5 w-3.5 text-emerald-500" />
+              ) : (
+                <Battery className="h-3.5 w-3.5" />
+              )
+            }
+            value={`${pct}%`}
+            mono
+          />
+          <StatCard
+            size="sm"
+            tone="default"
+            label="母线电压"
+            icon={<Zap className="h-3.5 w-3.5" />}
+            value={`${(battery?.voltage ?? 12.4).toFixed(1)}V`}
+            mono
+          />
+        </dl>
 
-        {/* Max Speed Controls */}
-        <div style={{ width: '100%', display: 'flex', gap: 8, fontSize: 12 }}>
-          <div style={{ flex: 1 }}>
-            <span style={{ color: '#64748b' }}>最高线速: {maxLinear}m/s</span>
+        {/* Speed Limit Sliders */}
+        <div className="grid w-full grid-cols-2 gap-3 rounded-[var(--abc-radius-md)] border border-[var(--abc-border)] bg-[var(--abc-bg-muted)]/50 p-2.5 text-xs">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--abc-fg-muted)]">最高线速</span>
+              <span className="font-mono font-semibold text-[var(--abc-fg)]">
+                {maxLinear.toFixed(1)} m/s
+              </span>
+            </div>
             <input
               type="range"
+              className="bot-range-slider"
               min="0.1"
               max="1.5"
               step="0.1"
               value={maxLinear}
               onChange={(e) => setMaxLinear(parseFloat(e.target.value))}
-              style={{ width: '100%' }}
             />
           </div>
-          <div style={{ flex: 1 }}>
-            <span style={{ color: '#64748b' }}>最高角速: {maxAngular}rad/s</span>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--abc-fg-muted)]">最高角速</span>
+              <span className="font-mono font-semibold text-[var(--abc-fg)]">
+                {maxAngular.toFixed(1)} rad/s
+              </span>
+            </div>
             <input
               type="range"
+              className="bot-range-slider"
               min="0.2"
               max="2.5"
               step="0.1"
               value={maxAngular}
               onChange={(e) => setMaxAngular(parseFloat(e.target.value))}
-              style={{ width: '100%' }}
             />
           </div>
         </div>
 
         {/* Emergency Stop Button */}
-        <button
-          className="btn btn-danger-light"
-          style={{ width: '100%', padding: '10px' }}
-          onClick={() => rosService.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 })}
+        <Button
+          variant="danger"
+          size="md"
+          block
+          leftIcon={<ShieldAlert className="h-4 w-4" />}
+          onClick={() => {
+            rosService.emergencyStop();
+            toast.warning('已触发紧急停止 (/cmd_vel 归零)');
+          }}
         >
-          <ShieldAlert size={16} />
-          <span>急停 / STOP</span>
-        </button>
+          急停 / EMERGENCY STOP (Space)
+        </Button>
       </div>
-    </div>
+    </Card>
   );
 }

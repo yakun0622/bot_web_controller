@@ -1,0 +1,5 @@
+@import "tailwindcss";
+@import "@abc-design/tokens/styles/index.css";
+
+@source "./**/*.{ts,tsx}";
+@source "../../charts/src/**/*.{ts,tsx}";

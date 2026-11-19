@@ -2,7 +2,9 @@
 node_modules/
 
 # Build and test output
-dist/
+/dist/
+!vendor/**/dist/
+!vendor/**/dist/**
 coverage/
 .vite/
 

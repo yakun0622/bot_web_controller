@@ -1,0 +1,39 @@
+{
+  "name": "@abc-design/react",
+  "version": "0.1.0",
+  "description": "ABC Design — 零业务耦合的企业级 React 组件库、5 模态自适应布局框架与 Pro 业务套件",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./styles.css": "./dist/abc-design.css",
+    "./source.css": "./src/styles.css"
+  },
+  "files": [
+    "dist",
+    "src/styles.css"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "dependencies": {
+    "@abc-design/core": "file:../core",
+    "@abc-design/tokens": "file:../tokens",
+    "clsx": "^2.1.1",
+    "dayjs": "^1.11.13",
+    "lucide-react": "^1.59.0",
+    "tailwind-merge": "^2.6.0"
+  }
+}

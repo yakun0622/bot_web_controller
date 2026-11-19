@@ -1,0 +1,23 @@
+{
+  "name": "@abc-design/core",
+  "version": "0.1.0",
+  "description": "ABC Design Core — 框架无关的纯 TypeScript 无头逻辑内核（拼音检索、树形级联勾选、日历矩阵、表格本地过滤与 URL Query 同步）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

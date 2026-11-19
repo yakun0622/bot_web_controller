@@ -1,5 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Camera, RefreshCw, Play, Pause, Video, Info, Check, Copy, Sliders } from 'lucide-react';
+import { Camera, Info, Pause, Play, RefreshCw, Sliders, Video } from 'lucide-react';
+import {
+  Alert,
+  Button,
+  Card,
+  CodeBlock,
+  Divider,
+  Drawer,
+  FormField,
+  Input,
+  Select,
+  StatusTag,
+  Tooltip,
+  useAbcConfig
+} from '@abc-design/react';
 import {
   buildRtspMjpegUrl,
   getStoredProxyBase,
@@ -10,13 +24,22 @@ import {
   setStoredRtspTransport
 } from '../utils/videoStream';
 
-export default function CameraFeed({ isSimulated, streamUrl }) {
+export default function CameraFeed({
+  isSimulated,
+  streamUrl,
+  rtspDrawerOpen: externalRtspOpen,
+  onRtspDrawerOpenChange
+}) {
+  const { toast } = useAbcConfig();
   const [isPaused, setIsPaused] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [imgReady, setImgReady] = useState(false);
   const [streamKey, setStreamKey] = useState(Date.now());
-  const [showRtspHelp, setShowRtspHelp] = useState(false);
-  const [copiedCmd, setCopiedCmd] = useState('');
+  const [internalRtspHelp, setInternalRtspHelp] = useState(false);
+
+  const showRtspHelp = externalRtspOpen ?? internalRtspHelp;
+  const setShowRtspHelp = onRtspDrawerOpenChange ?? setInternalRtspHelp;
+
   const [proxyBase, setProxyBase] = useState(getStoredProxyBase());
   const [rtspTransport, setRtspTransport] = useState(getStoredRtspTransport());
   const [proxyStatus, setProxyStatus] = useState(isRtspUrl(streamUrl) ? 'checking' : 'idle');
@@ -65,88 +88,75 @@ export default function CameraFeed({ isSimulated, streamUrl }) {
     setImgError(false);
     setImgReady(false);
     setStreamKey(Date.now());
+    toast.info('正在重新拉取视频流');
   };
 
-  const copyToClipboard = (text, label) => {
-    navigator.clipboard.writeText(text);
-    setCopiedCmd(label);
-    setTimeout(() => setCopiedCmd(''), 2000);
-  };
-
-  const showPlaceholder = !hasStream || isPaused || imgError || (isRtsp && proxyStatus !== 'ok' && proxyStatus !== 'checking');
+  const isLive = imgReady && !isPaused && !imgError;
+  const showPlaceholder =
+    !hasStream || isPaused || imgError || (isRtsp && proxyStatus !== 'ok' && proxyStatus !== 'checking');
   const proxyBlocked = isRtsp && (proxyStatus === 'offline' || proxyStatus === 'no-ffmpeg');
 
   return (
-    <div className="card">
-      <div className="card-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Video size={16} color={isRtsp ? '#8b5cf6' : '#2563eb'} />
-          <span>摄像头视频流</span>
-          {isRtsp && (
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                backgroundColor: '#f3e8ff',
-                color: '#7e22ce',
-                padding: '2px 6px',
-                borderRadius: 4,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4
-              }}
-            >
-              RTSP
-            </span>
-          )}
-        </div>
+    <>
+      <Card
+        size="sm"
+        padding="sm"
+        title={
+          <div className="flex items-center gap-2">
+            <Video
+              className="h-4 w-4 shrink-0"
+              style={{ color: isRtsp ? '#8b5cf6' : 'var(--abc-primary)' }}
+            />
+            <span>机载视频监控</span>
+            {isRtsp && (
+              <StatusTag tone="purple" size="xs" dot={false}>
+                RTSP
+              </StatusTag>
+            )}
+          </div>
+        }
+        extra={
+          <div className="flex items-center gap-1">
+            {isRtsp && (
+              <Tooltip content="RTSP 转码与传输设置">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  leftIcon={<Sliders className="h-3 w-3" />}
+                  onClick={() => setShowRtspHelp(true)}
+                >
+                  转码
+                </Button>
+              </Tooltip>
+            )}
 
-        <div style={{ display: 'flex', gap: 6 }}>
-          {isRtsp && (
-            <button
-              className="btn btn-outline"
-              style={{ padding: '2px 6px', fontSize: 11, color: '#7e22ce', borderColor: '#e9d5ff' }}
-              onClick={() => setShowRtspHelp(true)}
-              title="RTSP 转码设置"
-            >
-              <Sliders size={12} />
-              <span>RTSP设置</span>
-            </button>
-          )}
+            <Tooltip content={isPaused ? '恢复实时预览' : '暂停画面'}>
+              <Button
+                size="icon-sm"
+                variant="outline"
+                aria-label={isPaused ? '恢复播放' : '暂停播放'}
+                onClick={() => setIsPaused(!isPaused)}
+              >
+                {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+              </Button>
+            </Tooltip>
 
-          <button
-            className="btn btn-outline"
-            style={{ padding: '2px 6px', fontSize: 11 }}
-            onClick={() => setIsPaused(!isPaused)}
-            title={isPaused ? '恢复播放' : '暂停播放'}
-          >
-            {isPaused ? <Play size={12} /> : <Pause size={12} />}
-          </button>
-
-          <button
-            className="btn btn-outline"
-            style={{ padding: '2px 6px', fontSize: 11 }}
-            onClick={handleRefresh}
-            title="刷新画面"
-          >
-            <RefreshCw size={12} />
-          </button>
-        </div>
-      </div>
-
-      <div className="card-body">
+            <Tooltip content="重连刷新画面">
+              <Button
+                size="icon-sm"
+                variant="outline"
+                aria-label="刷新画面"
+                onClick={handleRefresh}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+              </Button>
+            </Tooltip>
+          </div>
+        }
+      >
         <div
-          style={{
-            width: '100%',
-            aspectRatio: '4 / 3',
-            backgroundColor: '#0f172a',
-            borderRadius: 6,
-            overflow: 'hidden',
-            position: 'relative',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}
+          style={{ aspectRatio: '4 / 3' }}
+          className="relative flex w-full items-center justify-center overflow-hidden rounded-[var(--abc-radius-md)] border border-slate-700 bg-slate-950"
         >
           {!isPaused && hasStream && (!isRtsp || proxyStatus === 'ok') && (
             <img
@@ -173,232 +183,200 @@ export default function CameraFeed({ isSimulated, streamUrl }) {
           {(showPlaceholder || (!imgReady && hasStream && !isPaused && !imgError)) && (
             <div
               style={{
-                width: '100%',
-                height: '100%',
-                background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#94a3b8',
-                gap: 8,
-                padding: 16,
-                textAlign: 'center',
-                position: 'absolute',
-                inset: 0,
-                overflow: 'hidden'
+                background: 'linear-gradient(135deg, #1e293b 0%, #090d16 100%)'
               }}
+              className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 p-4 text-center text-slate-300"
             >
               <div
+                aria-hidden="true"
                 style={{
-                  position: 'absolute',
-                  inset: 0,
-                  backgroundImage: 'radial-gradient(rgba(255,255,255,0.05) 1px, transparent 0)',
+                  backgroundImage: 'radial-gradient(rgba(255,255,255,0.06) 1px, transparent 0)',
                   backgroundSize: '16px 16px'
                 }}
+                className="pointer-events-none absolute inset-0"
               />
-              <Camera size={36} color={isRtsp ? '#8b5cf6' : '#3b82f6'} />
-              <span style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', zIndex: 1 }}>
+              <div className="relative z-10 flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04]">
+                <Camera className="h-5 w-5" style={{ color: isRtsp ? '#a855f7' : '#38bdf8' }} />
+              </div>
+
+              <div className="relative z-10 text-xs font-semibold text-slate-100">
                 {isPaused
-                  ? '预览已暂停'
+                  ? '实时视频预览已暂停'
                   : !hasStream
-                    ? (isSimulated ? '模拟视频流 (Bot Front Cam)' : '等待视频流连接...')
+                    ? isSimulated
+                      ? '仿真相机待机 (Front RGB Cam)'
+                      : '未配置视频流地址'
                     : proxyStatus === 'checking' || (!imgReady && !imgError && !proxyBlocked)
-                      ? (isRtsp ? '正在连接 RTSP 视频流...' : '正在连接视频流...')
+                      ? isRtsp
+                        ? '正在握手 RTSP 视频流...'
+                        : '正在连接视频流...'
                       : proxyStatus === 'offline'
                         ? 'RTSP 转码代理未运行'
                         : proxyStatus === 'no-ffmpeg'
-                          ? '未检测到 ffmpeg'
+                          ? '系统未检测到 FFmpeg'
                           : imgError
-                            ? (isRtsp ? 'RTSP 拉流失败' : '视频流连接失败')
-                            : '等待视频流连接...'}
-              </span>
+                            ? isRtsp
+                              ? 'RTSP 视频拉流失败'
+                              : '视频流无法访问'
+                            : '等待视频流信号...'}
+              </div>
 
               {isRtsp && !isPaused && hasStream && (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, maxWidth: 300, zIndex: 1 }}>
-                  <span style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.4 }}>
+                <div className="relative z-10 flex max-w-[280px] flex-col items-center gap-2">
+                  <span className="text-[11px] leading-relaxed text-slate-400">
                     {proxyStatus === 'offline'
-                      ? '浏览器无法直接播放 rtsp://，请启动本项目自带的转码代理。开发环境运行 npm run dev 即可。'
+                      ? '浏览器不支持直连 rtsp://，请启动内置转码服务（开发模式运行 npm run dev 即可）。'
                       : proxyStatus === 'no-ffmpeg'
-                        ? '代理已启动，但系统未安装 ffmpeg，无法将 RTSP 转为网页可播放的 MJPEG。'
+                        ? '代理服务在线，但主机未安装 ffmpeg，无法将 RTSP 实时转码为 MJPEG。'
                         : imgError
-                          ? '请检查摄像头地址、账号密码，或在 RTSP 设置中切换 TCP/UDP。'
-                          : '正在通过本地代理将 RTSP 转为网页预览。'}
+                          ? '请核对摄像头 IP、鉴权账号密码，或在转码设置中切换 TCP / UDP 传输。'
+                          : '正通过本地代理将 RTSP 转为低延迟 MJPEG...'}
                   </span>
                   {(proxyBlocked || imgError) && (
-                    <button
-                      className="btn btn-outline"
-                      style={{ fontSize: 11, padding: '4px 10px', color: '#e2e8f0', borderColor: '#475569' }}
+                    <Button
+                      size="xs"
+                      variant="secondary"
+                      leftIcon={<Info className="h-3.5 w-3.5" />}
                       onClick={() => setShowRtspHelp(true)}
                     >
-                      <Info size={12} color="#a855f7" />
-                      <span>查看 RTSP 说明</span>
-                    </button>
+                      配置 RTSP 转码代理
+                    </Button>
                   )}
                 </div>
               )}
 
-              {!isRtsp && !hasStream && (
-                <span style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace', zIndex: 1 }}>
-                  MJPEG / HTTP Stream | 640x480
+              {!isRtsp && (imgError || !hasStream) && (
+                <span className="relative z-10 font-mono text-[10px] text-slate-400">
+                  {streamUrl || 'MJPEG / HTTP Stream · 640×480'}
                 </span>
               )}
             </div>
           )}
 
-          <div
-            style={{
-              position: 'absolute',
-              top: 8,
-              left: 8,
-              display: 'flex',
-              gap: 6
-            }}
-          >
-            <div
-              style={{
-                backgroundColor: 'rgba(0, 0, 0, 0.65)',
-                color: imgReady && !isPaused && !imgError ? '#10b981' : '#94a3b8',
-                padding: '2px 8px',
-                borderRadius: 4,
-                fontSize: 11,
-                fontWeight: 600,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4
-              }}
+          {/* Top-left HUD status tags */}
+          <div className="pointer-events-none absolute top-2 left-2 z-20 flex items-center gap-1.5">
+            <StatusTag
+              size="xs"
+              tone={isLive ? 'success' : 'neutral'}
+              variant="solid"
+              dot
             >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  backgroundColor: imgReady && !isPaused && !imgError ? '#10b981' : '#94a3b8'
-                }}
-              />
-              {imgReady && !isPaused && !imgError ? 'LIVE' : 'IDLE'}
-            </div>
-
+              {isLive ? 'LIVE' : 'IDLE'}
+            </StatusTag>
             {isRtsp && (
-              <div
-                style={{
-                  backgroundColor: 'rgba(126, 34, 206, 0.85)',
-                  color: '#ffffff',
-                  padding: '2px 6px',
-                  borderRadius: 4,
-                  fontSize: 10,
-                  fontWeight: 600
-                }}
-              >
-                RTSP → MJPEG
-              </div>
+              <StatusTag size="xs" tone="purple" variant="solid" dot={false}>
+                RTSP → MJPEG ({rtspTransport.toUpperCase()})
+              </StatusTag>
             )}
           </div>
         </div>
-      </div>
+      </Card>
 
-      {showRtspHelp && (
-        <div className="modal-overlay" onClick={() => setShowRtspHelp(false)}>
-          <div className="modal-card" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
-            <div className="card-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Video size={18} color="#7e22ce" />
-                <span>RTSP 视频流转码设置</span>
-              </div>
-              <button
-                onClick={() => setShowRtspHelp(false)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16 }}
-              >
-                ✕
-              </button>
-            </div>
+      {/* Complex RTSP Settings & CLI Commands -> Right-side Drawer per ABC Design container guidelines */}
+      <Drawer
+        open={showRtspHelp}
+        onClose={() => setShowRtspHelp(false)}
+        title="RTSP 视频流转码代理配置"
+        description="基于 Node.js + FFmpeg 将机载 RTSP 相机实时转码为浏览器兼容的 multipart MJPEG 流"
+        badge={
+          <StatusTag
+            size="xs"
+            tone={proxyStatus === 'ok' ? 'success' : proxyStatus === 'checking' ? 'info' : 'warning'}
+          >
+            {proxyStatus === 'ok'
+              ? '代理就绪'
+              : proxyStatus === 'no-ffmpeg'
+                ? '缺少 FFmpeg'
+                : proxyStatus === 'offline'
+                  ? '代理离线'
+                  : '待检测'}
+          </StatusTag>
+        }
+        size="md"
+        storageKey="bot_rtsp_drawer"
+        footer={
+          <>
+            <Button size="sm" variant="outline" onClick={() => setShowRtspHelp(false)}>
+              关闭
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => {
+                setStoredProxyBase(proxyBase);
+                setShowRtspHelp(false);
+                handleRefresh();
+              }}
+            >
+              应用并重连视频流
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <Alert
+            tone="info"
+            showIcon
+            title="转码工作机制说明"
+            description="现代浏览器已移除原生 RTSP 插件支持。本项目内置轻量转码中间件，客户端断开或暂停时会自动回收 FFmpeg 子进程，零常驻算力开销。"
+          />
 
-            <div className="card-body" style={{ fontSize: 12, gap: 12, maxHeight: '80vh', overflowY: 'auto' }}>
-              <div style={{ backgroundColor: '#f3e8ff', border: '1px solid #e9d5ff', borderRadius: 6, padding: 10, color: '#6b21a8' }}>
-                浏览器不能直接播放原生 <code>rtsp://</code>。本项目会用 ffmpeg 将 RTSP 转成 MJPEG 后再预览。
-                <div style={{ marginTop: 6 }}>开发环境：<code>npm run dev</code>（已内置代理）</div>
-                <div>生产环境：安装 ffmpeg 后运行 <code>npm run rtsp-proxy</code></div>
-              </div>
+          <FormField
+            label="RTSP 底层传输协议"
+            helperText="局域网无线环境下优先推荐 TCP，可避免 UDP 丢包引起的花屏与断流"
+          >
+            <Select
+              size="sm"
+              value={rtspTransport}
+              onChange={(val) => {
+                const next = val === 'udp' ? 'udp' : 'tcp';
+                setRtspTransport(next);
+                setStoredRtspTransport(next);
+              }}
+              options={[
+                { value: 'tcp', label: 'TCP 传输（推荐，抗丢包更稳定）' },
+                { value: 'udp', label: 'UDP 传输（超低延迟，部分海康/大华相机需要）' }
+              ]}
+            />
+          </FormField>
 
-              <div className="form-group">
-                <label className="form-label" style={{ fontWeight: 600 }}>RTSP 传输方式</label>
-                <select
-                  className="form-select"
-                  value={rtspTransport}
-                  onChange={(e) => {
-                    const next = e.target.value === 'udp' ? 'udp' : 'tcp';
-                    setRtspTransport(next);
-                    setStoredRtspTransport(next);
-                  }}
-                >
-                  <option value="tcp">TCP（推荐，更稳定）</option>
-                  <option value="udp">UDP（部分摄像头需要）</option>
-                </select>
-              </div>
+          <FormField
+            label="自定义转码代理服务地址（可选）"
+            helperText="留空时自动依次探测当前站点同源 /api/rtsp 与当前主机 :8081 端口"
+          >
+            <Input
+              size="sm"
+              value={proxyBase}
+              onChange={(e) => setProxyBase(e.target.value)}
+              onBlur={() => setStoredProxyBase(proxyBase)}
+              placeholder="例如 http://192.168.2.88:8081（留空自动探测）"
+              allowClear
+            />
+          </FormField>
 
-              <div className="form-group">
-                <label className="form-label" style={{ fontWeight: 600 }}>自定义代理地址（可选）</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  value={proxyBase}
-                  onChange={(e) => setProxyBase(e.target.value)}
-                  onBlur={() => setStoredProxyBase(proxyBase)}
-                  placeholder="留空自动探测，例如 http://192.168.2.88:8081"
-                />
-                <span style={{ fontSize: 11, color: '#64748b' }}>
-                  默认会依次尝试当前页面同源 <code>/api/rtsp</code> 和 <code>:8081</code>。
-                </span>
-              </div>
+          <Divider label="服务端启动指令参考" />
 
-              <hr style={{ borderColor: '#e2e8f0' }} />
+          <div className="space-y-3">
+            <CodeBlock
+              title="开发环境（Vite 已自动挂载 /api/rtsp 中间件）"
+              language="bash"
+              variant="terminal"
+              copyLabel="复制"
+              copiedLabel="已复制"
+              code="npm run dev"
+            />
 
-              <div style={{ fontWeight: 600, color: '#0f172a' }}>常用启动命令</div>
-
-              <div style={{ backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: 10 }}>
-                <div style={{ fontWeight: 600, color: '#2563eb' }}>开发预览</div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#0f172a', color: '#38bdf8', padding: '6px 10px', borderRadius: 4, fontFamily: 'monospace', fontSize: 11, marginTop: 6 }}>
-                  <span>npm run dev</span>
-                  <button
-                    className="btn btn-outline"
-                    style={{ padding: '2px 6px', fontSize: 10, color: 'white', borderColor: '#475569' }}
-                    onClick={() => copyToClipboard('npm run dev', 'dev')}
-                  >
-                    {copiedCmd === 'dev' ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
-                  </button>
-                </div>
-              </div>
-
-              <div style={{ backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: 10 }}>
-                <div style={{ fontWeight: 600, color: '#2563eb' }}>生产环境独立代理</div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#0f172a', color: '#38bdf8', padding: '6px 10px', borderRadius: 4, fontFamily: 'monospace', fontSize: 11, marginTop: 6 }}>
-                  <span>npm run rtsp-proxy</span>
-                  <button
-                    className="btn btn-outline"
-                    style={{ padding: '2px 6px', fontSize: 10, color: 'white', borderColor: '#475569' }}
-                    onClick={() => copyToClipboard('npm run rtsp-proxy', 'proxy')}
-                  >
-                    {copiedCmd === 'proxy' ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
-                  </button>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => {
-                    setStoredProxyBase(proxyBase);
-                    setShowRtspHelp(false);
-                    handleRefresh();
-                  }}
-                >
-                  确定并重连
-                </button>
-              </div>
-            </div>
+            <CodeBlock
+              title="生产环境独立启动 RTSP 转码守护进程 (:8081)"
+              language="bash"
+              variant="terminal"
+              copyLabel="复制"
+              copiedLabel="已复制"
+              code="npm run rtsp-proxy"
+            />
           </div>
         </div>
-      )}
-    </div>
+      </Drawer>
+    </>
   );
 }

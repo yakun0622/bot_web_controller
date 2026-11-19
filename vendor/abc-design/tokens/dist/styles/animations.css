@@ -1,0 +1,545 @@
+/* ==================== 顶层原生 Dialog 滚动穿透隔离与动效系统 ==================== */
+@layer components {
+  /* 遵循标准：利用 overscroll-behavior 阻止模态窗内部及背景遮罩滚动穿透，避免修改 body overflow 引发页面抖动 */
+  dialog:modal {
+    overscroll-behavior: contain;
+  }
+
+  dialog::backdrop {
+    overflow: hidden;
+    overscroll-behavior: contain;
+    background: rgba(15, 23, 42, 0.48);
+    backdrop-filter: blur(2.5px);
+  }
+
+  /* Tabs 选中态底部横线形状指示器（基于 aria-selected 同步视觉与无障碍状态，兼容高对比度 Forced Colors 模式） */
+  .abc-tab-trigger[aria-selected="true"]::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0.5rem;
+    inset-block-end: 0;
+    border-block-end: 2.5px solid var(--abc-primary);
+    border-radius: 999px;
+  }
+
+  /* 响应式数据表格容器（支持容器查询与粘性表头） */
+  .abc-table-wrapper {
+    overflow: auto;
+    max-inline-size: 100%;
+    container-type: inline-size;
+  }
+
+  /* 面包屑装饰性分隔符：使用 CSS 空替代文本语法 ("/" / "") 对屏幕阅读器隐藏分隔斜杠 */
+  .abc-breadcrumb > ol > li + li::before {
+    content: "/" / "";
+    margin-inline: 0.45rem;
+    color: var(--abc-fg-subtle);
+    user-select: none;
+  }
+
+  /* 原生 <details> 手风琴无障碍与平滑高度折叠增强 */
+  .abc-collapse-item > summary {
+    list-style: none;
+  }
+  .abc-collapse-item > summary::-webkit-details-marker {
+    display: none;
+  }
+  .abc-collapse-item::details-content {
+    interpolate-size: allow-keywords;
+    overflow: clip;
+    contain: layout;
+  }
+  .abc-collapse-item:not([open])::details-content {
+    block-size: 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .abc-collapse-item::details-content {
+      transition:
+        block-size var(--abc-motion-base, 220ms) var(--abc-ease-standard, ease-in-out),
+        content-visibility var(--abc-motion-base, 220ms) ease-in-out allow-discrete;
+    }
+  }
+
+  /* 通用 CSS Grid 0fr -> 1fr 平滑折叠容器 */
+  .abc-collapse-grid {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    @media (prefers-reduced-motion: no-preference) {
+      transition:
+        grid-template-rows var(--abc-motion-base, 220ms) var(--abc-ease-standard, cubic-bezier(0.16, 1, 0.3, 1)),
+        opacity var(--abc-motion-fast, 140ms) ease-out;
+    }
+  }
+
+  .abc-collapse-grid[data-open="true"],
+  .abc-collapse-grid[data-collapsed="false"] {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+
+  .abc-collapse-grid > div {
+    overflow: hidden;
+  }
+
+  /* ==================== 统一组件微交互规格类（关联 --abc-motion-* 与 --abc-ease-active） ==================== */
+  .abc-motion-control {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform, scale;
+    transition-duration: var(--abc-motion-fast, 140ms);
+    transition-timing-function: var(--abc-ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+    @media (prefers-reduced-motion: no-preference) {
+      transition-timing-function:
+        ease-out, ease-out, ease-out, ease-out, ease-out,
+        var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1)),
+        var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1));
+      &:active:not(:disabled):not([aria-disabled="true"]) {
+        scale: var(--abc-press-scale, 0.97);
+      }
+    }
+  }
+
+  .abc-motion-surface {
+    transition-property: border-color, background-color, box-shadow, translate, transform, scale;
+    transition-duration: var(--abc-motion-base, 220ms);
+    transition-timing-function: var(--abc-ease-standard, cubic-bezier(0.16, 1, 0.3, 1));
+    @media (prefers-reduced-motion: no-preference) {
+      transition-timing-function:
+        ease-out, ease-out, ease-out,
+        var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1)),
+        var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1)),
+        var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1));
+      &[data-interactive="true"]:hover {
+        translate: 0 var(--abc-hover-lift, -2px);
+      }
+    }
+  }
+
+  .abc-motion-pop {
+    @media (prefers-reduced-motion: no-preference) {
+      animation:
+        abc-pop-scale var(--abc-motion-fast, 140ms) var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1)) both,
+        abc-fade-in var(--abc-motion-fast, 140ms) ease-out both;
+    }
+  }
+
+  /* ==================== 通用指示器旋转类（彻底隔离 Tailwind v4 `rotate` 与宿主 Tailwind v3 `transform` 叠加） ==================== */
+  .abc-chevron,
+  .abc-chevron-expand,
+  .abc-chevron-disclosure {
+    rotate: none !important;
+    transition: transform var(--abc-motion-fast, 150ms) var(--abc-ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+  }
+
+  .abc-chevron {
+    transform: rotate(0deg);
+  }
+  .abc-chevron[data-open="true"] {
+    transform: rotate(180deg) !important;
+  }
+
+  .abc-chevron-expand {
+    transform: rotate(0deg);
+  }
+  .abc-chevron-expand[data-open="true"] {
+    transform: rotate(90deg) !important;
+  }
+
+  .abc-chevron-disclosure {
+    transform: rotate(-90deg);
+  }
+  .abc-chevron-disclosure[data-open="true"] {
+    transform: rotate(0deg) !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .abc-chevron,
+    .abc-chevron-expand,
+    .abc-chevron-disclosure {
+      transition-duration: 0ms !important;
+    }
+  }
+}
+
+/* View Transition 主题切换扩散图层重置 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* ==================== 合成器线程微交互帧动画（仅操作 opacity / scale / translate / transform） ==================== */
+@keyframes abc-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes abc-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes abc-popover-grow {
+  from { scale: 0.92; }
+  to { scale: 1; }
+}
+
+@keyframes abc-pop-scale {
+  from { scale: 0.88; }
+  to { scale: 1; }
+}
+
+@keyframes abc-popover-shrink {
+  from { scale: 1; }
+  to { scale: 0.95; }
+}
+
+@keyframes abc-tooltip-in {
+  from { scale: 0.96; }
+  to { scale: 1; }
+}
+
+@keyframes abc-tooltip-out {
+  from { scale: 1; }
+  to { scale: 0.97; }
+}
+
+@keyframes abc-modal-rise {
+  from {
+    scale: 0.95;
+    translate: 0 10px;
+  }
+  to {
+    scale: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes abc-modal-sink {
+  from {
+    scale: 1;
+    translate: 0 0;
+  }
+  to {
+    scale: 0.97;
+    translate: 0 6px;
+  }
+}
+
+@keyframes abc-drawer-right-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes abc-drawer-right-out {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes abc-drawer-left-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes abc-drawer-left-out {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+
+@keyframes abc-floating-bar-rise {
+  from {
+    translate: 0 18px;
+    scale: 0.94;
+  }
+  to {
+    translate: 0 0;
+    scale: 1;
+  }
+}
+
+@keyframes abc-page-fade-slide {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes abc-page-zoom {
+  from {
+    opacity: 0;
+    scale: 0.985;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes abc-page-slide-left {
+  from {
+    opacity: 0;
+    translate: 14px 0;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes abc-skeleton-wave {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes abc-border-beam {
+  100% { offset-distance: 100%; }
+}
+
+@keyframes abc-aurora-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(3%, -4%, 0) scale(1.06); }
+}
+
+/* ==================== 按需渐进式动效类（逐规则内嵌 prefers-reduced-motion 与 --abc-motion 档位控制） ==================== */
+.abc-animate-fade-in {
+  animation: abc-fade-in var(--abc-motion-fast, 150ms) ease-out both;
+}
+
+.abc-animate-fade-out {
+  animation: abc-fade-out var(--abc-motion-fast, 130ms) ease-in both;
+}
+
+.abc-animate-popover-in {
+  animation: abc-fade-in var(--abc-motion-fast, 140ms) ease-out both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation:
+      abc-popover-grow var(--abc-motion-base, 220ms) var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1)) both,
+      abc-fade-in var(--abc-motion-fast, 140ms) ease-out both;
+  }
+}
+
+.abc-animate-popover-out {
+  animation: abc-fade-out var(--abc-motion-fast, 120ms) ease-in both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation:
+      abc-popover-shrink var(--abc-motion-fast, 120ms) ease-in both,
+      abc-fade-out var(--abc-motion-fast, 120ms) ease-in both;
+  }
+}
+
+/* Tooltip 使用收敛平滑的无回弹入退场曲线，避免小气泡与旋转箭头产生过冲颤动 */
+.abc-animate-tooltip-in {
+  animation: abc-fade-in var(--abc-motion-fast, 120ms) ease-out both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation:
+      abc-tooltip-in var(--abc-motion-fast, 120ms) var(--abc-ease-out, cubic-bezier(0.22, 1, 0.36, 1)) both,
+      abc-fade-in var(--abc-motion-fast, 120ms) ease-out both;
+  }
+}
+
+.abc-animate-tooltip-out {
+  animation: abc-fade-out 100ms ease-in both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation:
+      abc-tooltip-out 100ms ease-in both,
+      abc-fade-out 100ms ease-in both;
+  }
+}
+
+.abc-animate-modal-in {
+  animation: abc-fade-in var(--abc-motion-fast, 160ms) ease-out both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation:
+      abc-modal-rise var(--abc-motion-base, 240ms) var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1)) both,
+      abc-fade-in var(--abc-motion-fast, 160ms) ease-out both;
+  }
+}
+
+.abc-animate-modal-out {
+  animation: abc-fade-out var(--abc-motion-fast, 140ms) ease-in both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation:
+      abc-modal-sink var(--abc-motion-fast, 150ms) ease-in both,
+      abc-fade-out var(--abc-motion-fast, 140ms) ease-in both;
+  }
+}
+
+.abc-animate-drawer-right-in {
+  animation: abc-fade-in var(--abc-motion-fast, 160ms) ease-out both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: abc-drawer-right-in var(--abc-motion-base, 240ms) var(--abc-ease-standard, cubic-bezier(0.16, 1, 0.3, 1)) both;
+  }
+}
+
+.abc-animate-drawer-right-out {
+  animation: abc-fade-out var(--abc-motion-fast, 150ms) ease-in both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: abc-drawer-right-out var(--abc-motion-fast, 180ms) ease-in both;
+  }
+}
+
+.abc-animate-drawer-left-in {
+  animation: abc-fade-in var(--abc-motion-fast, 160ms) ease-out both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: abc-drawer-left-in var(--abc-motion-base, 240ms) var(--abc-ease-standard, cubic-bezier(0.16, 1, 0.3, 1)) both;
+  }
+}
+
+.abc-animate-drawer-left-out {
+  animation: abc-fade-out var(--abc-motion-fast, 150ms) ease-in both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: abc-drawer-left-out var(--abc-motion-fast, 180ms) ease-in both;
+  }
+}
+
+.abc-floating-bar-in {
+  animation: abc-fade-in var(--abc-motion-fast, 150ms) ease-out both;
+  @media (prefers-reduced-motion: no-preference) {
+    animation:
+      abc-floating-bar-rise var(--abc-motion-base, 240ms) var(--abc-ease-active, cubic-bezier(0.16, 1, 0.3, 1)) both,
+      abc-fade-in var(--abc-motion-fast, 150ms) ease-out both;
+  }
+}
+
+/* 当全局或局部开启 motion="none" 时，关闭位移/缩放动画，保证无延迟响应 */
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-popover-in,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-popover-out,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-tooltip-in,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-tooltip-out,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-modal-in,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-modal-out,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-drawer-right-in,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-drawer-right-out,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-drawer-left-in,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-animate-drawer-left-out,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-floating-bar-in,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-motion-pop,
+.abc-animate-popover-in[data-motion="none"],
+.abc-animate-popover-out[data-motion="none"],
+.abc-animate-tooltip-in[data-motion="none"],
+.abc-animate-tooltip-out[data-motion="none"],
+.abc-animate-modal-in[data-motion="none"],
+.abc-motion-pop[data-motion="none"] {
+  animation: none !important;
+}
+
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-chevron,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-chevron-expand,
+:is([data-abc-motion="none"], [data-motion="none"]) .abc-chevron-disclosure,
+.abc-chevron[data-motion="none"],
+.abc-chevron-expand[data-motion="none"],
+.abc-chevron-disclosure[data-motion="none"] {
+  transition-duration: 0ms !important;
+}
+
+.abc-page-fade-slide {
+  animation: abc-fade-in 150ms ease-out;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: abc-page-fade-slide 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+.abc-page-fade {
+  animation: abc-fade-in 160ms ease-out;
+}
+
+.abc-page-zoom {
+  animation: abc-fade-in 150ms ease-out;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: abc-page-zoom 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+.abc-page-slide-left {
+  animation: abc-fade-in 150ms ease-out;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: abc-page-slide-left 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+/* 骨架屏流光动画（仅在允许动态效果时启用位移扫描） */
+.abc-skeleton-wave {
+  position: relative;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .abc-skeleton-wave::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in srgb, var(--abc-fg) 8%, transparent) 50%,
+      transparent 100%
+    );
+    animation: abc-skeleton-wave 1.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+}
+
+/* ============================================================================
+ * 可拖拽排序列表与落点指示线 (SortableList & Drop Marker)
+ * ============================================================================ */
+.abc-sortable-dragging,
+.abc-sortable-dragging * {
+  cursor: grabbing !important;
+}
+
+.abc-sortable-handle {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.abc-sortable-list {
+  --abc-drop-color: var(--abc-primary);
+}
+
+@media (forced-colors: active) {
+  .abc-sortable-list {
+    --abc-drop-color: Highlight;
+  }
+}
+
+.abc-sortable-list[data-drop="true"]::before,
+.abc-sortable-list[data-drop="true"]::after {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  z-index: 60;
+}
+
+/* 左侧落点圆环 */
+.abc-sortable-list[data-drop="true"]::before {
+  left: calc(var(--abc-drop-x, 0px) - 4px);
+  top: calc(var(--abc-drop-y, 0px) - 4px);
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  border: 2px solid var(--abc-drop-color);
+  background: var(--abc-bg-surface);
+}
+
+/* 缝隙水平指示线 */
+.abc-sortable-list[data-drop="true"]::after {
+  left: calc(var(--abc-drop-x, 0px) + 4px);
+  top: calc(var(--abc-drop-y, 0px) - 1px);
+  width: calc(var(--abc-drop-w, 0px) - 4px);
+  height: 2px;
+  border-radius: 9999px;
+  background: var(--abc-drop-color);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}

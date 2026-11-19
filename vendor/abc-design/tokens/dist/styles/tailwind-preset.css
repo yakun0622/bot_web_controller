@@ -1,0 +1,42 @@
+/* Tailwind CSS v4 主题变量桥接层：允许业务与组件直接使用语义化工具类 */
+@custom-variant dark (&:where(.dark, .dark *, [data-abc-theme="dark"], [data-abc-theme="dark"] *));
+
+@theme {
+  --font-sans: var(--abc-font-sans);
+  --font-mono: var(--abc-font-mono);
+
+  /* 品牌色阶映射：支持 bg-primary-600 / text-primary-500 等随品牌切换自动变色 */
+  --color-primary-50: var(--abc-brand-50);
+  --color-primary-100: var(--abc-brand-100);
+  --color-primary-200: var(--abc-brand-200);
+  --color-primary-300: var(--abc-brand-300);
+  --color-primary-400: var(--abc-brand-400);
+  --color-primary-500: var(--abc-brand-500);
+  --color-primary-600: var(--abc-brand-600);
+  --color-primary-700: var(--abc-brand-700);
+  --color-primary-800: var(--abc-brand-800);
+  --color-primary-900: var(--abc-brand-900);
+  --color-primary-950: var(--abc-brand-950);
+
+  /* 语义化背景、文本与边框 Token 映射 */
+  --color-abc-canvas: var(--abc-bg-canvas);
+  --color-abc-surface: var(--abc-bg-surface);
+  --color-abc-elevated: var(--abc-bg-elevated);
+  --color-abc-muted: var(--abc-bg-muted);
+  --color-abc-subtle: var(--abc-bg-subtle);
+  --color-abc-fg: var(--abc-fg);
+  --color-abc-fg-secondary: var(--abc-fg-secondary);
+  --color-abc-fg-muted: var(--abc-fg-muted);
+  --color-abc-border: var(--abc-border);
+  --color-abc-border-strong: var(--abc-border-strong);
+  --color-abc-primary: var(--abc-primary);
+  --color-abc-primary-hover: var(--abc-primary-hover);
+  --color-abc-primary-soft: var(--abc-primary-soft);
+
+  /* 圆角档位映射 */
+  --radius-abc-xs: var(--abc-radius-xs);
+  --radius-abc-sm: var(--abc-radius-sm);
+  --radius-abc-md: var(--abc-radius-md);
+  --radius-abc-lg: var(--abc-radius-lg);
+  --radius-abc-xl: var(--abc-radius-xl);
+}

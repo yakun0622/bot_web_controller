@@ -1,0 +1,538 @@
+@layer reset, base, theme, components, utilities;
+
+/* ==================== Tier 1 & Tier 2: 根级 Design Tokens ==================== */
+@layer theme {
+  :root {
+    /* 默认声明双色方案，使原生滚动条、表单指示器与画布在脚本加载前跟随系统 */
+    color-scheme: light dark;
+
+    /* 同步映射 <meta name="color-scheme"> 覆盖值 */
+    &:has(> head > meta[name="color-scheme"][content="dark"]) {
+      color-scheme: dark;
+    }
+    &:has(> head > meta[name="color-scheme"][content="light"]) {
+      color-scheme: light;
+    }
+
+    /* 字体栈 */
+    --abc-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', Roboto, sans-serif;
+    --abc-font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+
+    /* 默认品牌色板：科技蓝 (Blue) */
+    --abc-brand-50: #eff6ff;
+    --abc-brand-100: #dbeafe;
+    --abc-brand-200: #bfdbfe;
+    --abc-brand-300: #93c5fd;
+    --abc-brand-400: #60a5fa;
+    --abc-brand-500: #3b82f6;
+    --abc-brand-600: #2563eb;
+    --abc-brand-700: #1d4ed8;
+    --abc-brand-800: #1e40af;
+    --abc-brand-900: #1e3a8a;
+    --abc-brand-950: #172554;
+
+    /* 状态语义色 */
+    --abc-success: #059669;
+    --abc-success-soft: #ecfdf5;
+    --abc-warning: #d97706;
+    --abc-warning-soft: #fffbeb;
+    --abc-danger: #e11d48;
+    --abc-danger-soft: #fff1f2;
+    --abc-info: #0284c7;
+    --abc-info-soft: #f0f9ff;
+
+    /* Tier 3: 亮色表面、文本与边框默认值 */
+    --abc-bg-canvas: #f4f6f9;
+    --abc-bg-surface: #ffffff;
+    --abc-bg-elevated: #ffffff;
+    --abc-bg-muted: #f8fafc;
+    --abc-bg-subtle: #f1f5f9;
+    --abc-fg: #0f172a;
+    --abc-fg-secondary: #334155;
+    --abc-fg-muted: #64748b;
+    --abc-fg-placeholder: #94a3b8;
+    --abc-border: rgba(226, 232, 240, 0.92);
+    --abc-border-strong: #cbd5e1;
+
+    /* JSON 语法高亮语义 Token（亮色高对比） */
+    --abc-json-key: #1e293b;
+    --abc-json-string: #047857;
+    --abc-json-number: #0369a1;
+    --abc-json-boolean: #b45309;
+    --abc-json-null: #64748b;
+    --abc-json-match-bg: #fef3c7;
+
+    /* 主色动态交互角色 */
+    --abc-primary: var(--abc-brand-600);
+    --abc-primary-hover: var(--abc-brand-700);
+    --abc-primary-active: var(--abc-brand-800);
+    --abc-primary-soft: var(--abc-brand-50);
+    --abc-primary-fg: #ffffff;
+    --abc-ring: color-mix(in srgb, var(--abc-brand-500) 22%, transparent);
+
+    /* 侧边栏深色专属 Token（支持经典深色边栏独立于亮色内容区） */
+    --abc-sidebar-dark-bg: #0f172a;
+    --abc-sidebar-dark-fg: #cbd5e1;
+    --abc-sidebar-dark-border: rgba(30, 41, 59, 0.85);
+
+    /* Tier 4: 尺寸密度（默认 34px 企业紧凑基线） */
+    --abc-control-h-xs: 28px;
+    --abc-control-h-sm: 34px;
+    --abc-control-h-md: 38px;
+    --abc-control-h-lg: 42px;
+    --abc-cell-py: 0.75rem;
+    --abc-cell-px: 1rem;
+
+    /* 圆角档位（默认 md = 8px） */
+    --abc-radius-xs: 4px;
+    --abc-radius-sm: 6px;
+    --abc-radius-md: 8px;
+    --abc-radius-lg: 12px;
+    --abc-radius-xl: 16px;
+
+    /* 壳层布局骨架尺寸 */
+    --abc-sidebar-w: 232px;
+    --abc-sidebar-collapsed-w: 64px;
+    --abc-dual-rail-w: 64px;
+    --abc-dual-panel-w: 196px;
+    --abc-header-h: 54px;
+    --abc-tabbar-h: 38px;
+
+    /* 阴影与表面材质层次（默认 enterprise 纯平企业风） */
+    --abc-ambient-glow: transparent;
+    --abc-surface-highlight: none;
+    --abc-glass-bg: var(--abc-bg-surface);
+    --abc-glass-blur: 0px;
+    --abc-shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04);
+    --abc-shadow-popover: 0 12px 32px -6px rgba(15, 23, 42, 0.14), 0 4px 12px -2px rgba(15, 23, 42, 0.06);
+    --abc-shadow-dialog: 0 24px 56px -12px rgba(15, 23, 42, 0.28);
+
+    /* 统一四档组件微交互动效 Token（默认 smooth 丝滑阻尼） */
+    --abc-motion-fast: 140ms;
+    --abc-motion-base: 220ms;
+    --abc-motion-slow: 320ms;
+    --abc-ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
+    --abc-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --abc-ease-spring: linear(0, 0.48 15%, 1.04 40%, 0.99 66%, 1);
+    --abc-ease-active: var(--abc-ease-standard);
+    --abc-press-scale: 0.97;
+    --abc-hover-lift: -2px;
+    --abc-hover-scale: 1.01;
+
+    /* 滚动条、自动填充与原生表单强调色 */
+    --abc-autofill-bg: #f0f7ff;
+    --abc-autofill-ring: color-mix(in srgb, var(--abc-brand-500) 42%, transparent);
+    --abc-scrollbar-thumb: rgba(148, 163, 184, 0.48);
+    --abc-scrollbar-track: transparent;
+    accent-color: var(--abc-primary);
+    scrollbar-width: auto;
+    scrollbar-color: var(--abc-scrollbar-thumb) var(--abc-scrollbar-track);
+  }
+
+  /* 系统偏好暗黑回退（当未强制指定 data-abc-theme="light" 时生效） */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-abc-theme="light"]) {
+      --abc-bg-canvas: #090d16;
+      --abc-bg-surface: #0f172a;
+      --abc-bg-elevated: #1e293b;
+      --abc-bg-muted: #131c2e;
+      --abc-bg-subtle: #1e293b;
+      --abc-fg: #f1f5f9;
+      --abc-fg-secondary: #cbd5e1;
+      --abc-fg-muted: #94a3b8;
+      --abc-fg-placeholder: #64748b;
+      --abc-border: rgba(51, 65, 85, 0.78);
+      --abc-border-strong: #475569;
+      --abc-primary: var(--abc-brand-500);
+      --abc-primary-hover: var(--abc-brand-400);
+      --abc-primary-active: var(--abc-brand-600);
+      --abc-primary-soft: color-mix(in srgb, var(--abc-brand-500) 16%, transparent);
+      --abc-success-soft: rgba(16, 185, 129, 0.15);
+      --abc-warning-soft: rgba(245, 158, 11, 0.15);
+      --abc-danger-soft: rgba(244, 63, 94, 0.15);
+      --abc-info-soft: rgba(14, 165, 233, 0.15);
+      --abc-json-key: #e2e8f0;
+      --abc-json-string: #34d399;
+      --abc-json-number: #38bdf8;
+      --abc-json-boolean: #fbbf24;
+      --abc-json-null: #94a3b8;
+      --abc-json-match-bg: rgba(245, 158, 11, 0.22);
+      --abc-autofill-bg: #0b1324;
+      --abc-autofill-ring: color-mix(in srgb, var(--abc-brand-400) 45%, transparent);
+      --abc-scrollbar-thumb: rgba(100, 116, 139, 0.55);
+      --abc-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+      --abc-shadow-popover: 0 16px 36px -6px rgba(0, 0, 0, 0.52);
+      --abc-shadow-dialog: 0 28px 64px -12px rgba(0, 0, 0, 0.65);
+    }
+  }
+
+  /* 显式暗色主题与局部暗色表面子树（如沉浸式登录页）覆盖 */
+  :is([data-abc-theme="dark"], .dark) {
+    color-scheme: dark;
+    color: var(--abc-fg);
+    accent-color: var(--abc-primary);
+    --abc-bg-canvas: #090d16;
+    --abc-bg-surface: #0f172a;
+    --abc-bg-elevated: #1e293b;
+    --abc-bg-muted: #131c2e;
+    --abc-bg-subtle: #1e293b;
+    --abc-fg: #f1f5f9;
+    --abc-fg-secondary: #cbd5e1;
+    --abc-fg-muted: #94a3b8;
+    --abc-fg-placeholder: #64748b;
+    --abc-border: rgba(51, 65, 85, 0.78);
+    --abc-border-strong: #475569;
+    --abc-primary: var(--abc-brand-500);
+    --abc-primary-hover: var(--abc-brand-400);
+    --abc-primary-active: var(--abc-brand-600);
+    --abc-primary-soft: color-mix(in srgb, var(--abc-brand-500) 16%, transparent);
+    --abc-success-soft: rgba(16, 185, 129, 0.15);
+    --abc-warning-soft: rgba(245, 158, 11, 0.15);
+    --abc-danger-soft: rgba(244, 63, 94, 0.15);
+    --abc-info-soft: rgba(14, 165, 233, 0.15);
+    --abc-json-key: #e2e8f0;
+    --abc-json-string: #34d399;
+    --abc-json-number: #38bdf8;
+    --abc-json-boolean: #fbbf24;
+    --abc-json-null: #94a3b8;
+    --abc-json-match-bg: rgba(245, 158, 11, 0.22);
+    --abc-autofill-bg: #0b1324;
+    --abc-autofill-ring: color-mix(in srgb, var(--abc-brand-400) 45%, transparent);
+    --abc-scrollbar-thumb: rgba(100, 116, 139, 0.55);
+    --abc-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --abc-shadow-popover: 0 16px 36px -6px rgba(0, 0, 0, 0.52);
+    --abc-shadow-dialog: 0 28px 64px -12px rgba(0, 0, 0, 0.65);
+  }
+
+  :root[data-abc-theme="light"] {
+    color-scheme: light;
+  }
+
+  /* ==================== 6 套内置企业品牌色预设 ==================== */
+  :root[data-abc-brand="indigo"] {
+    --abc-brand-50: #eef2ff;
+    --abc-brand-100: #e0e7ff;
+    --abc-brand-200: #c7d2fe;
+    --abc-brand-300: #a5b4fc;
+    --abc-brand-400: #818cf8;
+    --abc-brand-500: #6366f1;
+    --abc-brand-600: #4f46e5;
+    --abc-brand-700: #4338ca;
+    --abc-brand-800: #3730a3;
+    --abc-brand-900: #312e81;
+    --abc-brand-950: #1e1b4b;
+  }
+
+  :root[data-abc-brand="violet"] {
+    --abc-brand-50: #f5f3ff;
+    --abc-brand-100: #ede9fe;
+    --abc-brand-200: #ddd6fe;
+    --abc-brand-300: #c4b5fd;
+    --abc-brand-400: #a78bfa;
+    --abc-brand-500: #8b5cf6;
+    --abc-brand-600: #7c3aed;
+    --abc-brand-700: #6d28d9;
+    --abc-brand-800: #5b21b6;
+    --abc-brand-900: #4c1d95;
+    --abc-brand-950: #2e1065;
+  }
+
+  :root[data-abc-brand="emerald"] {
+    --abc-brand-50: #ecfdf5;
+    --abc-brand-100: #d1fae5;
+    --abc-brand-200: #a7f3d0;
+    --abc-brand-300: #6ee7b7;
+    --abc-brand-400: #34d399;
+    --abc-brand-500: #10b981;
+    --abc-brand-600: #059669;
+    --abc-brand-700: #047857;
+    --abc-brand-800: #065f46;
+    --abc-brand-900: #064e3b;
+    --abc-brand-950: #022c22;
+  }
+
+  :root[data-abc-brand="amber"] {
+    --abc-brand-50: #fffbeb;
+    --abc-brand-100: #fef3c7;
+    --abc-brand-200: #fde68a;
+    --abc-brand-300: #fcd34d;
+    --abc-brand-400: #fbbf24;
+    --abc-brand-500: #f59e0b;
+    --abc-brand-600: #d97706;
+    --abc-brand-700: #b45309;
+    --abc-brand-800: #92400e;
+    --abc-brand-900: #78350f;
+    --abc-brand-950: #451a03;
+  }
+
+  :root[data-abc-brand="rose"] {
+    --abc-brand-50: #fff1f2;
+    --abc-brand-100: #ffe4e6;
+    --abc-brand-200: #fecdd3;
+    --abc-brand-300: #fda4af;
+    --abc-brand-400: #fb7185;
+    --abc-brand-500: #f43f5e;
+    --abc-brand-600: #e11d48;
+    --abc-brand-700: #be123c;
+    --abc-brand-800: #9f1239;
+    --abc-brand-900: #881337;
+    --abc-brand-950: #4c0519;
+  }
+
+  /* ==================== 3 档信息密度切换 ==================== */
+  :root[data-abc-density="compact"] {
+    --abc-control-h-xs: 24px;
+    --abc-control-h-sm: 30px;
+    --abc-control-h-md: 34px;
+    --abc-control-h-lg: 38px;
+    --abc-cell-py: 0.5rem;
+    --abc-cell-px: 0.75rem;
+  }
+
+  :root[data-abc-density="comfortable"] {
+    --abc-control-h-xs: 30px;
+    --abc-control-h-sm: 38px;
+    --abc-control-h-md: 42px;
+    --abc-control-h-lg: 46px;
+    --abc-cell-py: 0.95rem;
+    --abc-cell-px: 1.15rem;
+  }
+
+  /* ==================== 4 档圆角风格切换 ==================== */
+  :root[data-abc-radius="none"] {
+    --abc-radius-xs: 0px;
+    --abc-radius-sm: 0px;
+    --abc-radius-md: 0px;
+    --abc-radius-lg: 0px;
+    --abc-radius-xl: 0px;
+  }
+
+  :root[data-abc-radius="sm"] {
+    --abc-radius-xs: 3px;
+    --abc-radius-sm: 4px;
+    --abc-radius-md: 6px;
+    --abc-radius-lg: 8px;
+    --abc-radius-xl: 10px;
+  }
+
+  :root[data-abc-radius="lg"] {
+    --abc-radius-xs: 6px;
+    --abc-radius-sm: 8px;
+    --abc-radius-md: 12px;
+    --abc-radius-lg: 16px;
+    --abc-radius-xl: 20px;
+  }
+
+  /* ==================== 全局字号缩放与无障碍色彩增强 ==================== */
+  :root[data-abc-font-scale="sm"] {
+    font-size: 93.75%;
+  }
+
+  :root[data-abc-font-scale="lg"] {
+    font-size: 106.25%;
+  }
+
+  :root[data-abc-visual="gray"] {
+    filter: grayscale(100%);
+  }
+
+  :root[data-abc-visual="color-weak"] {
+    filter: hue-rotate(18deg) saturate(118%) contrast(104%);
+  }
+
+  /* ==================== 4 档壳层与导航骨架几何尺寸 (xs / sm / md / lg) ==================== */
+  :root[data-abc-size="xs"] {
+    --abc-sidebar-w: 208px;
+    --abc-sidebar-collapsed-w: 56px;
+    --abc-dual-rail-w: 56px;
+    --abc-dual-panel-w: 176px;
+    --abc-header-h: 48px;
+    --abc-tabbar-h: 32px;
+  }
+
+  :root[data-abc-size="sm"] {
+    --abc-sidebar-w: 232px;
+    --abc-sidebar-collapsed-w: 64px;
+    --abc-dual-rail-w: 64px;
+    --abc-dual-panel-w: 196px;
+    --abc-header-h: 54px;
+    --abc-tabbar-h: 38px;
+  }
+
+  :root[data-abc-size="md"] {
+    --abc-sidebar-w: 248px;
+    --abc-sidebar-collapsed-w: 68px;
+    --abc-dual-rail-w: 68px;
+    --abc-dual-panel-w: 212px;
+    --abc-header-h: 58px;
+    --abc-tabbar-h: 42px;
+  }
+
+  :root[data-abc-size="lg"] {
+    --abc-sidebar-w: 268px;
+    --abc-sidebar-collapsed-w: 74px;
+    --abc-dual-rail-w: 74px;
+    --abc-dual-panel-w: 228px;
+    --abc-header-h: 62px;
+    --abc-tabbar-h: 46px;
+  }
+
+  /* ==================== 4 档组件交互动效规格（支持全局 data-abc-motion 与组件级 data-motion 局部覆盖） ==================== */
+  [data-abc-motion="none"],
+  [data-motion="none"] {
+    --abc-motion-fast: 0ms;
+    --abc-motion-base: 0ms;
+    --abc-motion-slow: 0ms;
+    --abc-ease-active: linear;
+    --abc-press-scale: 1;
+    --abc-hover-lift: 0px;
+    --abc-hover-scale: 1;
+  }
+
+  [data-abc-motion="subtle"],
+  [data-motion="subtle"] {
+    --abc-motion-fast: 90ms;
+    --abc-motion-base: 140ms;
+    --abc-motion-slow: 200ms;
+    --abc-ease-active: var(--abc-ease-out);
+    --abc-press-scale: 0.988;
+    --abc-hover-lift: -1px;
+    --abc-hover-scale: 1.004;
+  }
+
+  [data-abc-motion="smooth"],
+  [data-motion="smooth"] {
+    --abc-motion-fast: 140ms;
+    --abc-motion-base: 220ms;
+    --abc-motion-slow: 320ms;
+    --abc-ease-active: var(--abc-ease-standard);
+    --abc-press-scale: 0.97;
+    --abc-hover-lift: -2px;
+    --abc-hover-scale: 1.01;
+  }
+
+  [data-abc-motion="spring"],
+  [data-motion="spring"] {
+    --abc-motion-fast: 180ms;
+    --abc-motion-base: 280ms;
+    --abc-motion-slow: 380ms;
+    --abc-ease-active: var(--abc-ease-spring);
+    --abc-press-scale: 0.95;
+    --abc-hover-lift: -3px;
+    --abc-hover-scale: 1.015;
+  }
+
+  /* ==================== 2 档表面质感人格（enterprise 内部运营态 vs spotlight 外部消费/开发者云产品态） ==================== */
+  :root[data-abc-surface="spotlight"] {
+    --abc-bg-canvas: #f5f7fc;
+    --abc-bg-surface: #ffffff;
+    --abc-bg-elevated: #ffffff;
+    --abc-bg-muted: #eef2f9;
+    --abc-bg-subtle: #e7edf7;
+    --abc-border: rgba(213, 223, 236, 0.9);
+    --abc-border-strong: #bfcde0;
+    --abc-ambient-glow: color-mix(in srgb, var(--abc-brand-500) 7.5%, transparent);
+    --abc-surface-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.78);
+    --abc-glass-bg: color-mix(in srgb, var(--abc-bg-surface) 82%, transparent);
+    --abc-glass-blur: 14px;
+    --abc-shadow-card: 0 1px 2px rgba(11, 18, 32, 0.04), 0 4px 14px -4px rgba(11, 18, 32, 0.05);
+    --abc-shadow-popover: 0 14px 36px -6px rgba(11, 18, 32, 0.14), 0 4px 12px -2px rgba(11, 18, 32, 0.06);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root[data-abc-surface="spotlight"]:not([data-abc-theme="light"]) {
+      --abc-bg-canvas: #090c13;
+      --abc-bg-surface: #111622;
+      --abc-bg-elevated: #171e2e;
+      --abc-bg-muted: #0d121c;
+      --abc-bg-subtle: #192132;
+      --abc-border: rgba(38, 49, 68, 0.88);
+      --abc-border-strong: #33425b;
+      --abc-ambient-glow: color-mix(in srgb, var(--abc-brand-500) 13%, transparent);
+      --abc-surface-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+      --abc-glass-bg: color-mix(in srgb, #111622 80%, transparent);
+      --abc-glass-blur: 16px;
+      --abc-shadow-card: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px -6px rgba(0, 0, 0, 0.45);
+      --abc-shadow-popover: 0 20px 44px -8px rgba(0, 0, 0, 0.62);
+    }
+  }
+
+  :root[data-abc-surface="spotlight"]:is([data-abc-theme="dark"], .dark) {
+    --abc-bg-canvas: #090c13;
+    --abc-bg-surface: #111622;
+    --abc-bg-elevated: #171e2e;
+    --abc-bg-muted: #0d121c;
+    --abc-bg-subtle: #192132;
+    --abc-border: rgba(38, 49, 68, 0.88);
+    --abc-border-strong: #33425b;
+    --abc-ambient-glow: color-mix(in srgb, var(--abc-brand-500) 13%, transparent);
+    --abc-surface-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+    --abc-glass-bg: color-mix(in srgb, #111622 80%, transparent);
+    --abc-glass-blur: 16px;
+    --abc-shadow-card: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px -6px rgba(0, 0, 0, 0.45);
+    --abc-shadow-popover: 0 20px 44px -8px rgba(0, 0, 0, 0.62);
+  }
+}
+
+/* ==================== 基础排版与无损滚动条降级 ==================== */
+@layer base {
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+    font-family: var(--abc-font-sans);
+    background-color: var(--abc-bg-canvas);
+    background-image: radial-gradient(
+      ellipse 80% 260px at 50% -40px,
+      var(--abc-ambient-glow),
+      transparent 75%
+    );
+    background-repeat: no-repeat;
+    color: var(--abc-fg);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  table td,
+  table th {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 浏览器自动填充状态定制（保留 2px 内描边非颜色指示器，消除亮暗背景色差突变且不触发重排） */
+  input:is(:autofill, :-webkit-autofill),
+  textarea:is(:autofill, :-webkit-autofill),
+  select:is(:autofill, :-webkit-autofill) {
+    border-color: var(--abc-autofill-ring);
+    box-shadow:
+      inset 0 0 0 2px var(--abc-autofill-ring),
+      inset 0 0 0 100vmax var(--abc-autofill-bg);
+    -webkit-text-fill-color: var(--abc-fg);
+    caret-color: var(--abc-fg);
+  }
+
+  input:is(:autofill, :-webkit-autofill):is(:focus, :focus-visible),
+  textarea:is(:autofill, :-webkit-autofill):is(:focus, :focus-visible),
+  select:is(:autofill, :-webkit-autofill):is(:focus, :focus-visible) {
+    border-color: var(--abc-primary);
+    box-shadow:
+      0 0 0 2px var(--abc-ring),
+      inset 0 0 0 2px var(--abc-primary),
+      inset 0 0 0 100vmax var(--abc-autofill-bg);
+  }
+
+  /* 仅在不支持标准 scrollbar-color 的旧内核中使用 ::-webkit-scrollbar 回退 */
+  @supports not (scrollbar-color: auto) {
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--abc-scrollbar-track);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--abc-scrollbar-thumb);
+      border-radius: 9999px;
+    }
+  }
+}

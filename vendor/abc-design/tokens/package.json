@@ -1,0 +1,27 @@
+{
+  "name": "@abc-design/tokens",
+  "version": "0.1.0",
+  "description": "ABC Design 三层语义化 Design Tokens、多品牌主题引擎与 Tailwind CSS v4 预设",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./styles/index.css": "./dist/styles/index.css",
+    "./styles/tokens.css": "./dist/styles/tokens.css",
+    "./styles/animations.css": "./dist/styles/animations.css",
+    "./styles/tailwind-preset.css": "./dist/styles/tailwind-preset.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node ./scripts/copy-styles.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}
