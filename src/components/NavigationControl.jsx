@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Compass,
   Crosshair,
+  FolderOpen,
   Play,
   RefreshCw,
   Repeat,
@@ -14,6 +15,7 @@ import {
   Button,
   Card,
   FormField,
+  Input,
   Select,
   StatusBadge,
   StatusTag,
@@ -24,9 +26,10 @@ import {
 import { rosService } from '../services/rosService';
 
 export default function NavigationControl({
+  connected = false,
   isRunning,
   selectedMap,
-  availableMaps,
+  availableMaps = [],
   multiPointNav = false,
   loopWaypoints = false,
   waypoints = [],
@@ -36,8 +39,9 @@ export default function NavigationControl({
 }) {
   const { toast } = useAbcConfig();
   const [refreshing, setRefreshing] = useState(false);
+  const [customMapInput, setCustomMapInput] = useState('');
 
-  const mapOptions = (availableMaps || ['test_room']).map((m) => ({
+  const mapOptions = availableMaps.map((m) => ({
     value: m,
     label: m
   }));
@@ -46,9 +50,26 @@ export default function NavigationControl({
     setRefreshing(true);
     try {
       const list = await rosService.refreshAvailableMaps();
-      toast.success(`已同步地图库（共 ${list.length} 张地图）`);
+      toast.info(
+        list.length > 0
+          ? `已同步地图列表（共 ${list.length} 张）`
+          : '暂无已记录地图，可在下方直接输入机器人端 .yaml 地图路径加载'
+      );
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleLoadCustomMap = async (e) => {
+    e.preventDefault();
+    const target = customMapInput.trim();
+    if (!target) return;
+    const ok = await rosService.setSelectedMap(target);
+    if (ok) {
+      toast.success(`已通知 map_server 加载地图「${target}」`);
+      setCustomMapInput('');
+    } else {
+      toast.warning(`请求 /map_server/load_map 未响应，请确认文件路径与节点状态`);
     }
   };
 
@@ -59,57 +80,106 @@ export default function NavigationControl({
       title="自主导航控制"
       extra={
         <StatusBadge
-          status={isRunning ? 'active' : 'paused'}
-          label={isRunning ? '运行中' : '已暂停'}
+          status={!connected ? 'unavailable' : isRunning ? 'active' : 'paused'}
+          label={!connected ? '离线' : isRunning ? '运行中' : '待机'}
         />
       }
     >
       <div className="space-y-3">
-        <FormField label="活动导航地图">
-          <div className="flex items-center gap-1.5">
-            <div className="min-w-0 flex-1">
-              <Select
-                size="sm"
-                value={selectedMap}
-                options={mapOptions}
-                onChange={(val) => {
-                  if (val) {
-                    rosService.setSelectedMap(String(val));
-                    toast.info(`已切换活动地图为「${val}」`);
-                  }
-                }}
-              />
+        {mapOptions.length > 0 && (
+          <FormField label="已保存 / 发现的地图">
+            <div className="flex items-center gap-1.5">
+              <div className="min-w-0 flex-1">
+                <Select
+                  size="sm"
+                  disabled={!connected}
+                  value={selectedMap}
+                  placeholder="选择要加载的地图..."
+                  options={mapOptions}
+                  onChange={async (val) => {
+                    if (val) {
+                      const ok = await rosService.setSelectedMap(String(val));
+                      if (ok) toast.success(`已加载地图「${val}」`);
+                    }
+                  }}
+                />
+              </div>
+              <Tooltip content="同步远端可用地图列表">
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  disabled={!connected}
+                  loading={refreshing}
+                  aria-label="刷新地图列表"
+                  onClick={handleRefreshMaps}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                </Button>
+              </Tooltip>
             </div>
-            <Tooltip content="同步远端可用地图列表">
+          </FormField>
+        )}
+
+        <form onSubmit={handleLoadCustomMap}>
+          <FormField label={mapOptions.length > 0 ? '或指定地图路径加载' : '加载机器人端地图 (.yaml)'}>
+            <div className="flex items-center gap-1.5">
+              <div className="min-w-0 flex-1">
+                <Input
+                  size="sm"
+                  disabled={!connected}
+                  value={customMapInput}
+                  onChange={(e) => setCustomMapInput(e.target.value)}
+                  placeholder="如 room.yaml 或绝对路径..."
+                  allowClear
+                />
+              </div>
               <Button
-                size="icon-sm"
+                type="submit"
+                size="sm"
                 variant="outline"
-                loading={refreshing}
-                aria-label="刷新地图列表"
-                onClick={handleRefreshMaps}
+                disabled={!connected || !customMapInput.trim()}
+                leftIcon={<FolderOpen className="h-3.5 w-3.5" />}
               >
-                <RefreshCw className="h-3.5 w-3.5" />
+                加载
               </Button>
-            </Tooltip>
-          </div>
-        </FormField>
+              {mapOptions.length === 0 && (
+                <Tooltip content="查询远端地图列表服务">
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="outline"
+                    disabled={!connected}
+                    loading={refreshing}
+                    aria-label="刷新地图列表"
+                    onClick={handleRefreshMaps}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  </Button>
+                </Tooltip>
+              )}
+            </div>
+          </FormField>
+        </form>
 
         <Button
           size="sm"
+          disabled={!connected}
           variant={isRunning ? 'danger' : 'primary'}
           block
           leftIcon={isRunning ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
           onClick={() => {
-            rosService.toggleNavigationMode();
-            toast.info(isRunning ? '自主导航已停止并取消活动目标' : '自主导航已启动');
+            if (rosService.toggleNavigationMode()) {
+              toast.info(isRunning ? '自主导航已停止并取消活动目标' : '自主导航已启用');
+            }
           }}
         >
-          {isRunning ? '停止自主导航' : '启动自主导航'}
+          {isRunning ? '停止导航并取消目标' : '启用自主导航'}
         </Button>
 
         <div className="grid grid-cols-2 gap-2">
           <Button
             size="sm"
+            disabled={!connected}
             variant="warning"
             leftIcon={<Compass className="h-3.5 w-3.5" />}
             onClick={onSetInitialPose}
@@ -119,6 +189,7 @@ export default function NavigationControl({
 
           <Button
             size="sm"
+            disabled={!connected}
             variant="outline"
             leftIcon={<Crosshair className="h-3.5 w-3.5" />}
             onClick={onSetGoalPose}
@@ -143,6 +214,7 @@ export default function NavigationControl({
             </div>
             <Switch
               size="sm"
+              disabled={!connected}
               ariaLabel="切换多点巡航模式"
               checked={multiPointNav}
               onChange={(checked) => {
@@ -163,6 +235,7 @@ export default function NavigationControl({
                 </span>
                 <Switch
                   size="xs"
+                  disabled={!connected}
                   ariaLabel="切换循环巡航"
                   checked={loopWaypoints}
                   onChange={(checked) => rosService.setLoopWaypoints(checked)}
@@ -174,7 +247,7 @@ export default function NavigationControl({
                   size="xs"
                   variant="primary"
                   className="flex-1"
-                  disabled={waypoints.length === 0}
+                  disabled={!connected || waypoints.length === 0}
                   leftIcon={<Play className="h-3 w-3" />}
                   onClick={() => {
                     if (rosService.startWaypointPatrol()) {
@@ -209,7 +282,7 @@ export default function NavigationControl({
           description={
             multiPointNav
               ? '双击地图可依次添加有序巡航点；点击「设定目标」可在地图拖拽指定每个航点朝向角。'
-              : '双击地图可快速前往目标点；点击「初始位姿」或「设定目标」可在地图按住拖拽方向箭头。'
+              : '连接真机后，双击地图可快速前往目标点；点击「初始位姿」或「设定目标」可按住拖拽方向箭头。'
           }
         />
       </div>

@@ -5,10 +5,9 @@ import {
   BatteryLow,
   BatteryMedium,
   Link2,
-  PlayCircle,
+  RefreshCw,
   Settings,
-  Video,
-  Zap
+  Video
 } from 'lucide-react';
 import {
   Button,
@@ -22,7 +21,6 @@ import {
   Select,
   StatusBadge,
   StatusTag,
-  Switch,
   Tooltip,
   useAbcConfig
 } from '@abc-design/react';
@@ -30,7 +28,6 @@ import { rosService } from '../services/rosService';
 
 export default function Header({
   status,
-  isSimulated,
   rosUrl,
   videoUrl,
   rosProtocol = 'auto',
@@ -71,18 +68,22 @@ export default function Header({
     toast.info(`正在连接至 ${nextRos}`);
   };
 
-  const pct = battery?.percentage ?? 86;
+  const hasBattery = Boolean(battery && typeof battery.percentage === 'number');
+  const pct = hasBattery ? battery.percentage : 0;
   const isCharging = Boolean(battery?.isCharging);
 
-  const batteryVariant = isCharging
-    ? 'success'
-    : pct <= 20
-      ? 'danger'
-      : pct <= 55
-        ? 'warning'
-        : 'success';
+  const batteryVariant = !hasBattery
+    ? 'default'
+    : isCharging
+      ? 'success'
+      : pct <= 20
+        ? 'danger'
+        : pct <= 55
+          ? 'warning'
+          : 'success';
 
   const renderBatteryIcon = () => {
+    if (!hasBattery) return <Battery className="h-3.5 w-3.5 text-[var(--abc-fg-muted)]" />;
     if (isCharging) return <BatteryCharging className="h-3.5 w-3.5 text-emerald-500" />;
     if (pct <= 20) return <BatteryLow className="h-3.5 w-3.5 text-rose-500" />;
     if (pct <= 55) return <BatteryMedium className="h-3.5 w-3.5 text-amber-500" />;
@@ -100,9 +101,7 @@ export default function Header({
     status === 'connecting'
       ? '连接中'
       : status === 'connected'
-        ? isSimulated
-          ? '在线 · 仿真'
-          : `已连接 · ${detectedProtocol.toUpperCase()}`
+        ? `已连接 · ${detectedProtocol.toUpperCase()}`
         : '未连接';
 
   return (
@@ -113,13 +112,13 @@ export default function Header({
           placement="bottomRight"
           title={
             <div className="flex items-center justify-between gap-3">
-              <span>动力电池状态</span>
+              <span>动力电池遥测</span>
               <StatusTag
                 size="xs"
-                tone={isCharging ? 'success' : pct <= 20 ? 'danger' : 'info'}
-                dot
+                tone={!hasBattery ? 'neutral' : isCharging ? 'success' : pct <= 20 ? 'danger' : 'info'}
+                dot={hasBattery}
               >
-                {isCharging ? '充电中' : '放电中'}
+                {!hasBattery ? '等待数据' : isCharging ? '充电中' : '放电中'}
               </StatusTag>
             </div>
           }
@@ -131,34 +130,30 @@ export default function Header({
                 density="compact"
                 variant="divided"
                 items={[
-                  { key: 'pct', label: '剩余电量', value: `${pct}%`, mono: true },
+                  {
+                    key: 'pct',
+                    label: '剩余电量',
+                    value: hasBattery ? `${pct}%` : '--',
+                    mono: true
+                  },
                   {
                     key: 'volt',
                     label: '母线电压',
-                    value: `${(battery?.voltage ?? 12.4).toFixed(1)} V`,
+                    value: hasBattery ? `${battery.voltage.toFixed(1)} V` : '--',
                     mono: true
                   },
                   {
                     key: 'curr',
                     label: '实时电流',
-                    value: `${(battery?.current ?? -1.2).toFixed(1)} A`,
+                    value: hasBattery ? `${battery.current.toFixed(1)} A` : '--',
                     mono: true
                   }
                 ]}
               />
-              {isSimulated && (
-                <Button
-                  size="xs"
-                  variant="outline"
-                  block
-                  leftIcon={<Zap className="h-3.5 w-3.5 text-amber-500" />}
-                  onClick={() => {
-                    rosService.toggleSimCharging();
-                    toast.info(isCharging ? '已模拟拔出充电器' : '已模拟接入充电桩');
-                  }}
-                >
-                  {isCharging ? '模拟拔掉充电器' : '模拟接入充电桩'}
-                </Button>
+              {!hasBattery && (
+                <div className="text-[11px] leading-relaxed text-[var(--abc-fg-muted)]">
+                  尚未收到 <code>/battery_state</code> 话题数据。连接机器人并发布电源状态后自动刷新。
+                </div>
               )}
             </div>
           }
@@ -169,40 +164,14 @@ export default function Header({
             leftIcon={renderBatteryIcon()}
             aria-label="查看电池状态详情"
           >
-            <span className="font-mono font-semibold">{pct}%</span>
-            <span className="hidden sm:inline font-mono text-[11px] text-[var(--abc-fg-muted)]">
-              {(battery?.voltage ?? 12.4).toFixed(1)}V
-            </span>
+            <span className="font-mono font-semibold">{hasBattery ? `${pct}%` : '--%'}</span>
+            {hasBattery && (
+              <span className="hidden sm:inline font-mono text-[11px] text-[var(--abc-fg-muted)]">
+                {battery.voltage.toFixed(1)}V
+              </span>
+            )}
           </Button>
         </Popover>
-
-        {/* Simulation Mode Switch */}
-        <Tooltip content={isSimulated ? '关闭仿真并重连真机 ROS Bridge' : '开启内置无硬件仿真模式'}>
-          <div className="hidden sm:inline-flex items-center gap-1.5 rounded-[var(--abc-radius-md)] border border-[var(--abc-border)] bg-[var(--abc-bg-muted)]/70 px-2.5 py-1 text-xs">
-            <PlayCircle
-              className="h-3.5 w-3.5"
-              style={{ color: isSimulated ? 'var(--abc-primary)' : 'var(--abc-fg-muted)' }}
-            />
-            <span className="font-medium text-[var(--abc-fg-secondary)]">仿真</span>
-            <Switch
-              size="xs"
-              ariaLabel="切换仿真模式"
-              checked={isSimulated}
-              onChange={(checked) => {
-                if (checked) {
-                  rosService.setSimulationMode(true);
-                  toast.success('已切换至内置仿真模式');
-                } else {
-                  rosService.connect(rosUrl, {
-                    fallbackToSimulation: true,
-                    rosProtocol
-                  });
-                  toast.info(`正在尝试连接真机 ${rosUrl}`);
-                }
-              }}
-            />
-          </div>
-        </Tooltip>
 
         {/* ROS Connection StatusBadge */}
         <StatusBadge
@@ -210,6 +179,23 @@ export default function Header({
           label={statusLabel}
           pulse={status === 'connecting'}
         />
+
+        {/* Quick Reconnect Action when disconnected */}
+        {status === 'disconnected' && (
+          <Tooltip content={`立即重连 ${rosUrl}`}>
+            <Button
+              size="xs"
+              variant="secondary"
+              leftIcon={<RefreshCw className="h-3 w-3" />}
+              onClick={() => {
+                rosService.reconnect();
+                toast.info(`正在尝试重连 ${rosUrl}`);
+              }}
+            >
+              <span className="hidden sm:inline">重连</span>
+            </Button>
+          </Tooltip>
+        )}
 
         <Divider orientation="vertical" className="hidden sm:inline-block" />
 
@@ -231,7 +217,7 @@ export default function Header({
         open={showSettingsModal}
         onClose={() => setShowSettingsModal(false)}
         title="机器人通信与视频流配置"
-        description="支持 ROS 2 (Nav2) 与 ROS 1 (move_base) 双协议自动识别及机载 HTTP / RTSP 视频流接入"
+        description="支持 ROS 2 (Nav2) 与 ROS 1 (move_base) 双协议自动识别、断线退避重连及机载 HTTP / RTSP 视频流接入"
         size="md"
         fullscreenable={false}
         footer={
@@ -265,7 +251,7 @@ export default function Header({
           <FormField
             label="ROS Bridge WebSocket 地址"
             required
-            helperText="示例: ws://192.168.2.88:9090 或 ws://localhost:9090（连接超时自动进入内置仿真模式）"
+            helperText="示例: ws://192.168.2.88:9090 或 ws://localhost:9090（断线后将自动退避重连）"
           >
             <Input
               size="sm"

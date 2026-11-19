@@ -1,8 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Compass, Crosshair, MapPin, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  Compass,
+  Crosshair,
+  Map as MapIcon,
+  MapPin,
+  RefreshCw,
+  RotateCcw,
+  Settings,
+  WifiOff,
+  ZoomIn,
+  ZoomOut
+} from 'lucide-react';
 import {
   Button,
   Card,
+  EmptyState,
   StatusBadge,
   StatusTag,
   Tooltip,
@@ -17,6 +29,8 @@ function getOriginYaw(orientation) {
 }
 
 export default function MapViewer({
+  status = 'disconnected',
+  rosUrl = '',
   mapData,
   costmapData,
   scanData,
@@ -29,13 +43,14 @@ export default function MapViewer({
   loopWaypoints = false,
   remainingDistance,
   estimatedTime,
-  navigationRunning = true,
+  navigationRunning = false,
   mappingRunning = false,
   layers,
   isSettingInitialPose,
   setIsSettingInitialPose,
   isSettingGoalPose = false,
-  setIsSettingGoalPose
+  setIsSettingGoalPose,
+  onOpenSettings
 }) {
   const { resolvedTheme, toast } = useAbcConfig();
   const isDark = resolvedTheme === 'dark';
@@ -44,44 +59,53 @@ export default function MapViewer({
   const containerRef = useRef(null);
   const offscreenMapRef = useRef(null);
 
-  // Canvas pan & zoom state
   const [scale, setScale] = useState(2.4);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [viewportTick, setViewportTick] = useState(0);
+  const [poseDrag, setPoseDrag] = useState(null);
 
-  // Drag vector state for setting Initial Pose or Goal Pose with exact orientation theta
-  const [poseDrag, setPoseDrag] = useState(null); // { mode: 'initial'|'goal', worldX, worldY, theta, startPx, startPy, curPx, curPy }
-
-  // Multi-touch pointer tracking for mobile pan & pinch-to-zoom
   const activePointersRef = useRef(new Map());
   const panOriginRef = useRef({ x: 0, y: 0 });
   const pinchStateRef = useRef(null);
 
-  const mapWidth = mapData?.info?.width || 120;
-  const mapHeight = mapData?.info?.height || 120;
+  const connected = status === 'connected';
+  const hasMap = Boolean(mapData?.info && mapData?.data);
+
+  const mapWidth = mapData?.info?.width || 0;
+  const mapHeight = mapData?.info?.height || 0;
   const resolution = mapData?.info?.resolution || 0.05;
   const originYaw = useMemo(
     () => getOriginYaw(mapData?.info?.origin?.orientation),
     [mapData?.info?.origin?.orientation]
   );
 
-  // Compute true ROS world coordinate of the map grid center (supports origin offset + origin yaw)
   const originX = mapData?.info?.origin?.position?.x ?? (-mapWidth * resolution) / 2;
   const originY = mapData?.info?.origin?.position?.y ?? (-mapHeight * resolution) / 2;
   const halfW = (mapWidth * resolution) / 2;
   const halfH = (mapHeight * resolution) / 2;
-  const mapCenterWorldX = originX + halfW * Math.cos(originYaw) - halfH * Math.sin(originYaw);
-  const mapCenterWorldY = originY + halfW * Math.sin(originYaw) + halfH * Math.cos(originYaw);
+  const mapCenterWorldX = hasMap
+    ? originX + halfW * Math.cos(originYaw) - halfH * Math.sin(originYaw)
+    : 0;
+  const mapCenterWorldY = hasMap
+    ? originY + halfW * Math.sin(originYaw) + halfH * Math.cos(originYaw)
+    : 0;
 
-  const isPoseToolActive = Boolean(isSettingInitialPose || isSettingGoalPose);
+  const isPoseToolActive = Boolean(connected && (isSettingInitialPose || isSettingGoalPose));
+
+  useEffect(() => {
+    if (!connected) {
+      setPoseDrag(null);
+      setIsSettingInitialPose?.(false);
+      setIsSettingGoalPose?.(false);
+    }
+  }, [connected, setIsSettingInitialPose, setIsSettingGoalPose]);
 
   const handleResetView = () => {
     setScale(2.4);
     setOffset({ x: 0, y: 0 });
   };
 
-  // Convert canvas client coords to ROS world coords (meters)
   const pxToWorld = useCallback(
     (clientX, clientY, canvas) => {
       const rect = canvas.getBoundingClientRect();
@@ -102,7 +126,6 @@ export default function MapViewer({
     [offset.x, offset.y, scale, mapCenterWorldX, mapCenterWorldY, resolution]
   );
 
-  // Convert ROS world coords (meters) to canvas pixel coords
   const worldToPx = useCallback(
     (wx, wy, canvas) => {
       const cx = canvas.width / 2 + offset.x;
@@ -116,7 +139,7 @@ export default function MapViewer({
     [offset.x, offset.y, scale, mapCenterWorldX, mapCenterWorldY, resolution]
   );
 
-  // Pre-bake OccupancyGrid + Costmap into an offscreen ImageData canvas (1 GPU drawImage per frame instead of 150k fillRects!)
+  // Pre-bake OccupancyGrid + Costmap texture
   useEffect(() => {
     if (!layers.showMap && !layers.showCostmap) {
       offscreenMapRef.current = null;
@@ -149,7 +172,6 @@ export default function MapViewer({
     const costArr =
       costGrid?.info?.width === width && costGrid?.info?.height === height ? costGrid.data : null;
 
-    // Theme RGB palettes
     const freeR = isDark ? 19 : 239;
     const freeG = isDark ? 31 : 246;
     const freeB = isDark ? 53 : 255;
@@ -188,7 +210,6 @@ export default function MapViewer({
           buf[dstIdx + 2] = freeB;
           buf[dstIdx + 3] = 255;
         } else {
-          // Unknown (-1): leave transparent so crisp metric grid shows through
           buf[dstIdx + 3] = 0;
         }
       }
@@ -198,7 +219,6 @@ export default function MapViewer({
     setViewportTick((n) => n + 1);
   }, [mapData, costmapData, layers.showMap, layers.showCostmap, isDark]);
 
-  // Observe container resize
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return undefined;
@@ -209,7 +229,6 @@ export default function MapViewer({
     return () => ro.disconnect();
   }, []);
 
-  // Mouse wheel zoom
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
@@ -224,13 +243,11 @@ export default function MapViewer({
     return () => canvas.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // Unified Pointer Events: Pose vector drag OR 1-finger pan OR 2-finger pinch zoom
   const handlePointerDown = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     canvas.setPointerCapture?.(e.pointerId);
 
-    // If Initial Pose or Goal Pose placement tool is active: press & drag sets position + heading theta!
     if (isPoseToolActive && e.button === 0) {
       const { worldX, worldY, canvasX, canvasY } = pxToWorld(e.clientX, e.clientY, canvas);
       const defaultTheta = isSettingInitialPose
@@ -275,7 +292,6 @@ export default function MapViewer({
       const dx = curPx - poseDrag.startPx;
       const dy = curPy - poseDrag.startPy;
 
-      // Update heading angle once dragged >= 8px (canvas Y is inverted vs ROS Y)
       const nextTheta = Math.hypot(dx, dy) >= 8 ? Math.atan2(-dy, dx) : poseDrag.theta;
       setPoseDrag((prev) => (prev ? { ...prev, curPx, curPy, theta: nextTheta } : null));
       return;
@@ -304,18 +320,18 @@ export default function MapViewer({
       setPoseDrag(null);
 
       if (mode === 'initial') {
-        rosService.setInitialPose(worldX, worldY, theta);
-        setIsSettingInitialPose?.(false);
-        toast.success(`已标定初始位姿 (${worldX.toFixed(2)}, ${worldY.toFixed(2)}, θ=${deg}°)`);
-      } else {
-        rosService.setGoalPose(worldX, worldY, theta);
+        if (rosService.setInitialPose(worldX, worldY, theta)) {
+          setIsSettingInitialPose?.(false);
+          toast.success(`已发布初始位姿 (${worldX.toFixed(2)}, ${worldY.toFixed(2)}, θ=${deg}°)`);
+        }
+      } else if (rosService.setGoalPose(worldX, worldY, theta)) {
         if (!multiPointNav) {
           setIsSettingGoalPose?.(false);
         }
         toast.success(
           multiPointNav
             ? `已添加巡航航点 (${worldX.toFixed(2)}, ${worldY.toFixed(2)}, θ=${deg}°)`
-            : `已设定导航目标 (${worldX.toFixed(2)}, ${worldY.toFixed(2)}, θ=${deg}°)`
+            : `已下发导航目标 (${worldX.toFixed(2)}, ${worldY.toFixed(2)}, θ=${deg}°)`
         );
       }
       return;
@@ -330,20 +346,19 @@ export default function MapViewer({
     }
   };
 
-  // Quick double-click shortcut when no tool is selected
   const handleDoubleClick = (e) => {
-    if (isPoseToolActive || !canvasRef.current) return;
+    if (!connected || isPoseToolActive || !canvasRef.current) return;
     const { worldX, worldY } = pxToWorld(e.clientX, e.clientY, canvasRef.current);
     const naturalTheta = Math.atan2(worldY - (robotPose?.y || 0), worldX - (robotPose?.x || 0));
-    rosService.setGoalPose(worldX, worldY, naturalTheta);
-    toast.success(
-      multiPointNav
-        ? `已追加巡航航点 #${waypoints.length + 1} (${worldX.toFixed(2)}, ${worldY.toFixed(2)})`
-        : `已设定导航目标 (${worldX.toFixed(2)}, ${worldY.toFixed(2)})`
-    );
+    if (rosService.setGoalPose(worldX, worldY, naturalTheta)) {
+      toast.success(
+        multiPointNav
+          ? `已追加巡航航点 #${waypoints.length + 1} (${worldX.toFixed(2)}, ${worldY.toFixed(2)})`
+          : `已下发导航目标 (${worldX.toFixed(2)}, ${worldY.toFixed(2)})`
+      );
+    }
   };
 
-  // Main 60FPS Render Loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -379,7 +394,9 @@ export default function MapViewer({
       ctx.stroke();
     }
 
-    // 1. Blit pre-baked OccupancyGrid + Costmap texture (with originYaw support)
+    if (!connected) return;
+
+    // 1. Blit pre-baked OccupancyGrid + Costmap texture
     if ((layers.showMap || layers.showCostmap) && offscreenMapRef.current) {
       const offCanvas = offscreenMapRef.current;
       const drawW = offCanvas.width * scale;
@@ -395,7 +412,7 @@ export default function MapViewer({
       ctx.restore();
     }
 
-    // 2. Draw Multi-Point Patrol Route & Numbered Waypoints
+    // 2. Multi-Point Patrol Route & Numbered Waypoints
     if (layers.showGoal && waypoints && waypoints.length > 0) {
       if (waypoints.length > 1) {
         ctx.save();
@@ -420,7 +437,6 @@ export default function MapViewer({
         const { px, py } = worldToPx(wp.x, wp.y, canvas);
         const isCurrent = idx === activeWaypointIndex;
 
-        // Heading tick
         const tickLen = 15;
         ctx.beginPath();
         ctx.moveTo(px, py);
@@ -429,7 +445,6 @@ export default function MapViewer({
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // Numbered badge circle
         ctx.beginPath();
         ctx.arc(px, py, 9, 0, 2 * Math.PI);
         ctx.fillStyle = isCurrent ? '#f59e0b' : '#9333ea';
@@ -446,7 +461,7 @@ export default function MapViewer({
       });
     }
 
-    // 3. Draw Planned Path
+    // 3. Planned Path
     if (layers.showPath && pathData && pathData.length > 0) {
       ctx.beginPath();
       ctx.strokeStyle = isDark ? '#22d3ee' : '#06b6d4';
@@ -462,7 +477,7 @@ export default function MapViewer({
       ctx.setLineDash([]);
     }
 
-    // 4. Draw Laser Scan Points
+    // 4. Laser Scan Points
     if (layers.showScan && scanData && scanData.length > 0) {
       ctx.fillStyle = isDark ? '#fb7185' : '#ef4444';
       scanData.forEach((pt) => {
@@ -473,7 +488,7 @@ export default function MapViewer({
       });
     }
 
-    // 5. Draw Active Goal Target Marker (with directional arrow!)
+    // 5. Active Goal Target Marker
     if (layers.showGoal && targetPose) {
       const { px, py } = worldToPx(targetPose.x, targetPose.y, canvas);
       const gAngle = -(targetPose.theta || 0);
@@ -487,7 +502,6 @@ export default function MapViewer({
       ctx.fillStyle = isDark ? 'rgba(192, 132, 252, 0.26)' : 'rgba(168, 85, 247, 0.24)';
       ctx.fill();
 
-      // Heading arrow shaft + tip
       ctx.beginPath();
       ctx.moveTo(0, 0);
       ctx.lineTo(16, 0);
@@ -509,8 +523,8 @@ export default function MapViewer({
       ctx.restore();
     }
 
-    // 6. Draw Robot Pose (Directional Arrow)
-    if (layers.showRobot && robotPose) {
+    // 6. Robot Pose Arrow
+    if (layers.showRobot && robotPose && (hasMap || scanData?.length > 0)) {
       const { px, py } = worldToPx(robotPose.x, robotPose.y, canvas);
       const angle = -robotPose.theta;
 
@@ -538,7 +552,7 @@ export default function MapViewer({
       ctx.restore();
     }
 
-    // 7. Draw Interactive Pose-Vector Drag Preview (2D Pose Estimate / 2D Goal Pose)
+    // 7. Interactive Pose-Vector Drag Preview
     if (poseDrag) {
       const { startPx, startPy, theta, mode } = poseDrag;
       const isInit = mode === 'initial';
@@ -563,7 +577,6 @@ export default function MapViewer({
       ctx.lineWidth = 3;
       ctx.stroke();
 
-      // Arrowhead
       const headAngle = Math.atan2(endY - startPy, endX - startPx);
       ctx.beginPath();
       ctx.moveTo(endX, endY);
@@ -573,7 +586,6 @@ export default function MapViewer({
       ctx.fillStyle = strokeCol;
       ctx.fill();
 
-      // Live degree badge next to cursor
       const degText = `${((theta * 180) / Math.PI).toFixed(0)}°`;
       ctx.font = 'bold 11px ui-monospace, SFMono-Regular, monospace';
       ctx.fillStyle = strokeCol;
@@ -581,6 +593,8 @@ export default function MapViewer({
       ctx.restore();
     }
   }, [
+    connected,
+    hasMap,
     scale,
     offset,
     mapData,
@@ -611,6 +625,26 @@ export default function MapViewer({
         ? '双击地图追加巡航航点（或点「设定目标」拖拽朝向）'
         : '双击地图快速前往（或点「设定目标」拖拽朝向）';
 
+  const headerBadgeStatus = !connected
+    ? status === 'connecting'
+      ? 'starting'
+      : 'unavailable'
+    : mappingRunning
+      ? 'running'
+      : navigationRunning
+        ? 'active'
+        : 'paused';
+
+  const headerBadgeLabel = !connected
+    ? status === 'connecting'
+      ? '连接握手中'
+      : '未连接'
+    : mappingRunning
+      ? '建图中'
+      : navigationRunning
+        ? '导航就绪'
+        : '待机';
+
   return (
     <Card
       size="sm"
@@ -621,8 +655,9 @@ export default function MapViewer({
         <div className="flex flex-wrap items-center gap-2">
           <span>SLAM 栅格地图</span>
           <StatusBadge
-            status={mappingRunning ? 'running' : navigationRunning ? 'active' : 'paused'}
-            label={mappingRunning ? '建图中' : navigationRunning ? '导航就绪' : '导航待机'}
+            status={headerBadgeStatus}
+            label={headerBadgeLabel}
+            pulse={status === 'connecting'}
           />
           {isSettingInitialPose && (
             <StatusTag size="xs" tone="warning" dot>
@@ -663,6 +698,7 @@ export default function MapViewer({
           <Tooltip content="在地图上按住拖拽箭头，设定带精确朝向角的目标位姿">
             <Button
               size="xs"
+              disabled={!connected}
               variant={isSettingGoalPose ? 'primary' : 'outline'}
               leftIcon={<Crosshair className="h-3.5 w-3.5" />}
               onClick={() => {
@@ -678,6 +714,7 @@ export default function MapViewer({
           <Tooltip content="在地图上按住拖拽箭头，标定机器人当前初始位置与朝向 (/initialpose)">
             <Button
               size="xs"
+              disabled={!connected}
               variant={isSettingInitialPose ? 'primary' : 'warning'}
               leftIcon={<Compass className="h-3.5 w-3.5" />}
               onClick={() => {
@@ -708,7 +745,7 @@ export default function MapViewer({
       <div
         ref={containerRef}
         style={{
-          cursor: isPoseToolActive ? 'crosshair' : isPanning ? 'grabbing' : 'grab',
+          cursor: !connected ? 'default' : isPoseToolActive ? 'crosshair' : isPanning ? 'grabbing' : 'grab',
           touchAction: 'none'
         }}
         className="relative flex-1 min-h-72 w-full overflow-hidden bg-[var(--abc-bg-muted)]"
@@ -716,46 +753,94 @@ export default function MapViewer({
         {/* Top-Left Map Metadata Pill */}
         <div className="pointer-events-none absolute top-2.5 left-2.5 z-10 flex items-center gap-2 rounded-[var(--abc-radius-md)] border border-[var(--abc-border)] bg-[var(--abc-bg-surface)]/92 px-2.5 py-1 text-[11px] font-mono text-[var(--abc-fg-muted)] shadow-xs backdrop-blur-xs">
           <span>
-            {mapWidth}×{mapHeight} ({resolution}m/px)
+            {hasMap ? `${mapWidth}×${mapHeight} (${resolution}m/px)` : '等待 /map 话题'}
           </span>
           <span>·</span>
           <span>{Math.round(scale * 100)}%</span>
         </div>
 
-        {/* Center Interaction Prompt Pill */}
-        <div className="pointer-events-none absolute top-2.5 left-1/2 z-10 -translate-x-1/2 hidden sm:flex">
-          <StatusTag
-            size="sm"
-            tone={isSettingInitialPose ? 'warning' : isSettingGoalPose ? 'purple' : 'primary'}
-            icon={<MapPin className="h-3.5 w-3.5" />}
-            dot={false}
-          >
-            {promptText}
-          </StatusTag>
-        </div>
+        {/* Center Interaction Prompt Pill (only when connected & map available) */}
+        {connected && hasMap && (
+          <div className="pointer-events-none absolute top-2.5 left-1/2 z-10 -translate-x-1/2 hidden sm:flex">
+            <StatusTag
+              size="sm"
+              tone={isSettingInitialPose ? 'warning' : isSettingGoalPose ? 'purple' : 'primary'}
+              icon={<MapPin className="h-3.5 w-3.5" />}
+              dot={false}
+            >
+              {promptText}
+            </StatusTag>
+          </div>
+        )}
 
         {/* Top-Right Telemetry & Navigation Progress HUD */}
         <div className="pointer-events-none absolute top-2.5 right-2.5 z-10 min-w-36 space-y-1.5 rounded-[var(--abc-radius-lg)] border border-[var(--abc-border)] bg-[var(--abc-bg-surface)]/92 px-3 py-2 text-xs shadow-xs backdrop-blur-xs">
           <div className="flex items-center justify-between gap-3">
             <span className="text-[var(--abc-fg-muted)]">剩余距离</span>
             <span className="font-mono font-semibold tabular-nums text-[var(--abc-fg)]">
-              {(remainingDistance || 0).toFixed(2)} m
+              {connected ? `${(remainingDistance || 0).toFixed(2)} m` : '--'}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="text-[var(--abc-fg-muted)]">预计到达</span>
             <span className="font-mono font-semibold tabular-nums text-[var(--abc-fg)]">
-              {(estimatedTime || 0).toFixed(1)} s
+              {connected ? `${(estimatedTime || 0).toFixed(1)} s` : '--'}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3 border-t border-[var(--abc-border)] pt-1 text-[11px]">
             <span className="text-[var(--abc-fg-muted)]">位姿 (X,Y,θ)</span>
             <span className="font-mono tabular-nums text-[var(--abc-fg-secondary)]">
-              {(robotPose?.x || 0).toFixed(2)}, {(robotPose?.y || 0).toFixed(2)},{' '}
-              {(((robotPose?.theta || 0) * 180) / Math.PI).toFixed(0)}°
+              {connected
+                ? `${(robotPose?.x || 0).toFixed(2)}, ${(robotPose?.y || 0).toFixed(2)}, ${(((robotPose?.theta || 0) * 180) / Math.PI).toFixed(0)}°`
+                : '--'}
             </span>
           </div>
         </div>
+
+        {/* Disconnected or Waiting-for-Map Overlay */}
+        {(!connected || (!hasMap && (!scanData || scanData.length === 0))) && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-6">
+            <div className="pointer-events-auto max-w-sm rounded-[var(--abc-radius-xl)] border border-[var(--abc-border)] bg-[var(--abc-bg-surface)]/95 p-4 shadow-md backdrop-blur-xs">
+              {!connected ? (
+                <EmptyState
+                  compact
+                  icon={<WifiOff className="h-6 w-6 text-[var(--abc-fg-muted)]" />}
+                  title={status === 'connecting' ? '正在连接 ROS Bridge...' : 'ROS Bridge 未连接'}
+                  description={`目标地址: ${rosUrl || '未配置'}。请确认机器人端已启动 rosbridge_websocket，系统将在后台自动退避重连。`}
+                  action={
+                    <div className="flex items-center justify-center gap-2">
+                      <Button
+                        size="xs"
+                        variant="primary"
+                        leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+                        onClick={() => rosService.reconnect()}
+                      >
+                        立即重连
+                      </Button>
+                      {onOpenSettings && (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          leftIcon={<Settings className="h-3.5 w-3.5" />}
+                          onClick={onOpenSettings}
+                        >
+                          连接配置
+                        </Button>
+                      )}
+                    </div>
+                  }
+                />
+              ) : (
+                <EmptyState
+                  compact
+                  icon={<MapIcon className="h-6 w-6 text-[var(--abc-primary)]" />}
+                  title="已连接，等待 /map 栅格地图数据"
+                  description="ROS Bridge 通信正常，请确认机器人端已启动 map_server (Nav2) 或 slam_toolbox 建图节点。"
+                />
+              )}
+            </div>
+          </div>
+        )}
 
         {/* SLAM Canvas */}
         <canvas

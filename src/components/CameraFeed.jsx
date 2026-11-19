@@ -25,7 +25,6 @@ import {
 } from '../utils/videoStream';
 
 export default function CameraFeed({
-  isSimulated,
   streamUrl,
   rtspDrawerOpen: externalRtspOpen,
   onRtspDrawerOpenChange
@@ -203,9 +202,7 @@ export default function CameraFeed({
                 {isPaused
                   ? '实时视频预览已暂停'
                   : !hasStream
-                    ? isSimulated
-                      ? '仿真相机待机 (Front RGB Cam)'
-                      : '未配置视频流地址'
+                    ? '未配置机载视频流地址'
                     : proxyStatus === 'checking' || (!imgReady && !imgError && !proxyBlocked)
                       ? isRtsp
                         ? '正在握手 RTSP 视频流...'
@@ -247,7 +244,7 @@ export default function CameraFeed({
 
               {!isRtsp && (imgError || !hasStream) && (
                 <span className="relative z-10 font-mono text-[10px] text-slate-400">
-                  {streamUrl || 'MJPEG / HTTP Stream · 640×480'}
+                  {streamUrl || '请在「连接配置」中填入 HTTP / MJPEG 或 RTSP 地址'}
                 </span>
               )}
             </div>
@@ -261,7 +258,7 @@ export default function CameraFeed({
               variant="solid"
               dot
             >
-              {isLive ? 'LIVE' : 'IDLE'}
+              {isLive ? 'LIVE' : 'OFFLINE'}
             </StatusTag>
             {isRtsp && (
               <StatusTag size="xs" tone="purple" variant="solid" dot={false}>
@@ -272,7 +269,7 @@ export default function CameraFeed({
         </div>
       </Card>
 
-      {/* Complex RTSP Settings & CLI Commands -> Right-side Drawer per ABC Design container guidelines */}
+      {/* RTSP Settings Drawer */}
       <Drawer
         open={showRtspHelp}
         onClose={() => setShowRtspHelp(false)}

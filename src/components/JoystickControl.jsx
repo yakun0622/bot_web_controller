@@ -12,7 +12,7 @@ import {
 import { Button, Card, StatCard, StatusTag, useAbcConfig } from '@abc-design/react';
 import { rosService } from '../services/rosService';
 
-export default function JoystickControl({ linearVel, angularVel, battery }) {
+export default function JoystickControl({ connected = false, linearVel, angularVel, battery }) {
   const { toast } = useAbcConfig();
   const joystickRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -27,9 +27,18 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
 
   const radius = 64;
 
+  // Reset active joystick state if ROS disconnects mid-drag
+  useEffect(() => {
+    if (!connected) {
+      setIsDragging(false);
+      setKnobPos({ x: 0, y: 0 });
+      activeCmdRef.current = { active: false, lx: 0, az: 0 };
+    }
+  }, [connected]);
+
   useEffect(() => {
     const timer = setInterval(() => {
-      if (activeCmdRef.current.active) {
+      if (connected && activeCmdRef.current.active) {
         rosService.publishTwist(
           { x: activeCmdRef.current.lx, y: 0, z: 0 },
           { x: 0, y: 0, z: activeCmdRef.current.az }
@@ -37,7 +46,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
       }
     }, 100);
     return () => clearInterval(timer);
-  }, []);
+  }, [connected]);
 
   const updateVelFromOffset = (dx, dy) => {
     const normX = dx / radius;
@@ -51,6 +60,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
   };
 
   const handlePointerDown = (e) => {
+    if (!connected) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
     setIsDragging(true);
     updatePointerPosition(e);
@@ -77,7 +87,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
   };
 
   const handlePointerMove = (e) => {
-    if (!isDragging) return;
+    if (!isDragging || !connected) return;
     updatePointerPosition(e);
   };
 
@@ -91,6 +101,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
 
   // Keyboard controls listener (WASD / Arrows / Space E-Stop)
   useEffect(() => {
+    if (!connected) return undefined;
     const activeKeys = new Set();
 
     const syncKeyboardTwist = () => {
@@ -164,9 +175,10 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [maxLinear, maxAngular]);
+  }, [connected, maxLinear, maxAngular]);
 
-  const pct = battery?.percentage ?? 86;
+  const hasBattery = Boolean(battery && typeof battery.percentage === 'number');
+  const pct = hasBattery ? battery.percentage : 0;
 
   return (
     <Card
@@ -174,8 +186,8 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
       padding="sm"
       title="底盘运动遥控"
       extra={
-        <StatusTag size="xs" tone="neutral" dot={false} icon={<Keyboard className="h-3 w-3" />}>
-          WASD / 方向键
+        <StatusTag size="xs" tone={connected ? 'neutral' : 'warning'} dot={false} icon={<Keyboard className="h-3 w-3" />}>
+          {connected ? 'WASD / 方向键' : '未连接锁定'}
         </StatusTag>
       }
     >
@@ -183,6 +195,8 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
         {/* Token-styled Interactive Joystick Pad */}
         <div
           ref={joystickRef}
+          style={!connected ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
+          title={!connected ? '请先连接机器人 ROS Bridge' : undefined}
           className="bot-joystick-pad"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
@@ -223,7 +237,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
           />
           <StatCard
             size="sm"
-            tone={pct <= 20 ? 'danger' : battery?.isCharging ? 'success' : 'default'}
+            tone={!hasBattery ? 'default' : pct <= 20 ? 'danger' : battery?.isCharging ? 'success' : 'default'}
             label="电池电量"
             icon={
               battery?.isCharging ? (
@@ -232,7 +246,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
                 <Battery className="h-3.5 w-3.5" />
               )
             }
-            value={`${pct}%`}
+            value={hasBattery ? `${pct}%` : '--'}
             mono
           />
           <StatCard
@@ -240,7 +254,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
             tone="default"
             label="母线电压"
             icon={<Zap className="h-3.5 w-3.5" />}
-            value={`${(battery?.voltage ?? 12.4).toFixed(1)}V`}
+            value={hasBattery ? `${battery.voltage.toFixed(1)}V` : '--'}
             mono
           />
         </dl>
@@ -289,6 +303,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
           variant="danger"
           size="md"
           block
+          disabled={!connected}
           leftIcon={<ShieldAlert className="h-4 w-4" />}
           onClick={() => {
             activeCmdRef.current = { active: false, lx: 0, az: 0 };

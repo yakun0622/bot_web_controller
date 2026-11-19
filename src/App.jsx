@@ -20,7 +20,6 @@ import {
   ResizableSplitPane,
   SegmentedControl,
   StatCard,
-  StatusBadge,
   StatusTag,
   useAbcConfig
 } from '@abc-design/react';
@@ -89,11 +88,11 @@ export default function App() {
 
   const [telemetry, setTelemetry] = useState({
     status: 'disconnected',
-    isSimulated: false,
     rosProtocol: 'auto',
     detectedProtocol: 'ros2',
     activeTopicSummary: null,
-    poseSource: 'simulation',
+    reconnectAttempts: 0,
+    poseSource: 'none',
     linearVel: { x: 0, y: 0, z: 0 },
     angularVel: { x: 0, y: 0, z: 0 },
     robotPose: { x: 0, y: 0, theta: 0 },
@@ -109,16 +108,10 @@ export default function App() {
     remainingDistance: 0,
     estimatedTime: 0,
     mappingRunning: false,
-    navigationRunning: true,
-    selectedMap: 'test_room',
-    availableMaps: ['test_room', 'factory_floor_1', 'office_space_3'],
-    battery: {
-      percentage: 86,
-      voltage: 12.4,
-      current: -1.2,
-      isCharging: false,
-      powerSupplyStatus: 2
-    },
+    navigationRunning: false,
+    selectedMap: '',
+    availableMaps: [],
+    battery: null,
     logs: []
   });
 
@@ -134,20 +127,22 @@ export default function App() {
   const [isSettingInitialPose, setIsSettingInitialPose] = useState(false);
   const [isSettingGoalPose, setIsSettingGoalPose] = useState(false);
 
+  const isConnected = telemetry.status === 'connected';
+  const hasMap = Boolean(telemetry.mapData?.info && telemetry.mapData?.data);
+
   useEffect(() => {
     const unsubscribe = rosService.subscribe((data) => {
       setTelemetry(data);
     });
 
     rosService.connect(settings.rosUrl, {
-      fallbackToSimulation: true,
-      rosProtocol: settings.rosProtocol
+      rosProtocol: settings.rosProtocol,
+      autoReconnect: true
     });
 
     return () => {
       unsubscribe();
       rosService.disconnect();
-      rosService.stopSimLoop();
     };
   }, []);
 
@@ -160,8 +155,8 @@ export default function App() {
       console.warn('Unable to persist connection settings:', error);
     }
     rosService.connect(merged.rosUrl, {
-      fallbackToSimulation: true,
-      rosProtocol: merged.rosProtocol
+      rosProtocol: merged.rosProtocol,
+      autoReconnect: true
     });
   };
 
@@ -191,6 +186,10 @@ export default function App() {
   };
 
   const handleStartInitialPose = () => {
+    if (!isConnected) {
+      toast.warning('请先连接机器人 ROS Bridge');
+      return;
+    }
     setIsSettingGoalPose(false);
     setIsSettingInitialPose(true);
     ensureMapVisible();
@@ -198,6 +197,10 @@ export default function App() {
   };
 
   const handleStartGoalPose = () => {
+    if (!isConnected) {
+      toast.warning('请先连接机器人 ROS Bridge');
+      return;
+    }
     setIsSettingInitialPose(false);
     setIsSettingGoalPose(true);
     ensureMapVisible();
@@ -221,27 +224,19 @@ export default function App() {
         keywords: ['stop', 'estop', '急停', '制动'],
         onTrigger: () => {
           rosService.emergencyStop();
-          toast.warning('已通过全局指令触发紧急制动');
+          toast.warning('已触发紧急制动指令');
         }
       },
       {
-        id: 'bot_toggle_sim',
-        title: telemetry.isSimulated ? '关闭仿真并重连真机 ROS' : '切换至内置无硬件仿真模式',
-        subtitle: telemetry.isSimulated ? `目标端点: ${settings.rosUrl}` : '启动 10Hz 激光投射建图与导航仿真',
-        group: '机器人控制',
-        priority: 90,
-        keywords: ['simulation', 'ros', '仿真', '真机'],
+        id: 'bot_reconnect',
+        title: '立即重新连接 ROS Bridge',
+        subtitle: `目标端点: ${settings.rosUrl} (${settings.rosProtocol.toUpperCase()})`,
+        group: '通信与流媒体',
+        priority: 95,
+        keywords: ['reconnect', 'connect', 'ros', '重连', '连接'],
         onTrigger: () => {
-          if (telemetry.isSimulated) {
-            rosService.connect(settings.rosUrl, {
-              fallbackToSimulation: true,
-              rosProtocol: settings.rosProtocol
-            });
-            toast.info(`正在连接真机 ${settings.rosUrl}`);
-          } else {
-            rosService.setSimulationMode(true);
-            toast.success('已开启内置仿真模式');
-          }
+          rosService.reconnect();
+          toast.info(`正在尝试重连 ${settings.rosUrl}`);
         }
       },
       {
@@ -263,12 +258,15 @@ export default function App() {
       {
         id: 'bot_export_map',
         title: '导出当前地图为标准 ROS 文件 (.pgm + .yaml)',
-        subtitle: `当前地图: ${telemetry.selectedMap}`,
+        subtitle: hasMap ? `当前地图: ${telemetry.selectedMap || 'active_map'}` : '需先收到 /map 话题数据',
         group: '导航与建图',
         keywords: ['export', 'pgm', 'yaml', '导出地图', '保存地图'],
         onTrigger: () => {
-          if (rosService.exportCurrentMapFiles(telemetry.selectedMap)) {
-            toast.success(`已导出 ${telemetry.selectedMap}.pgm 与 .yaml`);
+          const name = telemetry.selectedMap || 'bot_map';
+          if (rosService.exportCurrentMapFiles(name)) {
+            toast.success(`已导出 ${name}.pgm 与 .yaml`);
+          } else {
+            toast.warning('当前尚未收到 /map 话题数据');
           }
         }
       },
@@ -277,14 +275,20 @@ export default function App() {
         title: telemetry.mappingRunning ? '停止 SLAM 建图' : '启动 SLAM 建图',
         group: '导航与建图',
         keywords: ['slam', 'mapping', '建图'],
-        onTrigger: () => rosService.toggleMappingMode()
+        onTrigger: () => {
+          if (!isConnected) toast.warning('请先连接 ROS Bridge');
+          else rosService.toggleMappingMode();
+        }
       },
       {
         id: 'bot_toggle_nav',
-        title: telemetry.navigationRunning ? '停止自主导航' : '启动自主导航',
+        title: telemetry.navigationRunning ? '停止自主导航' : '启用自主导航',
         group: '导航与建图',
         keywords: ['navigation', 'nav2', 'move_base', '导航'],
-        onTrigger: () => rosService.toggleNavigationMode()
+        onTrigger: () => {
+          if (!isConnected) toast.warning('请先连接 ROS Bridge');
+          else rosService.toggleNavigationMode();
+        }
       },
       {
         id: 'bot_open_conn',
@@ -304,7 +308,8 @@ export default function App() {
       }
     ],
     [
-      telemetry.isSimulated,
+      isConnected,
+      hasMap,
       telemetry.mappingRunning,
       telemetry.navigationRunning,
       telemetry.selectedMap,
@@ -316,8 +321,13 @@ export default function App() {
 
   const renderControlPanels = () => (
     <>
-      <MappingControl isRunning={telemetry.mappingRunning} />
+      <MappingControl
+        connected={isConnected}
+        hasMap={hasMap}
+        isRunning={telemetry.mappingRunning}
+      />
       <NavigationControl
+        connected={isConnected}
         isRunning={telemetry.navigationRunning}
         selectedMap={telemetry.selectedMap}
         availableMaps={telemetry.availableMaps}
@@ -338,6 +348,8 @@ export default function App() {
 
   const renderMapViewer = () => (
     <MapViewer
+      status={telemetry.status}
+      rosUrl={settings.rosUrl}
       mapData={telemetry.mapData}
       costmapData={telemetry.costmapData}
       scanData={telemetry.scanData}
@@ -357,6 +369,7 @@ export default function App() {
       setIsSettingInitialPose={setIsSettingInitialPose}
       isSettingGoalPose={isSettingGoalPose}
       setIsSettingGoalPose={setIsSettingGoalPose}
+      onOpenSettings={() => setSettingsOpen(true)}
     />
   );
 
@@ -388,12 +401,12 @@ export default function App() {
         <div className="bot-cockpit-shell">
           <div className="bot-teleop-grid">
             <CameraFeed
-              isSimulated={telemetry.isSimulated}
               streamUrl={settings.videoUrl}
               rtspDrawerOpen={rtspDrawerOpen}
               onRtspDrawerOpenChange={setRtspDrawerOpen}
             />
             <JoystickControl
+              connected={isConnected}
               linearVel={telemetry.linearVel}
               angularVel={telemetry.angularVel}
               battery={telemetry.battery}
@@ -407,46 +420,54 @@ export default function App() {
     if (pathname === '/diagnostics') {
       const yawDeg = (((telemetry.robotPose?.theta || 0) * 180) / Math.PI).toFixed(1);
       const topicInfo = telemetry.activeTopicSummary || {};
+      const hasBattery = Boolean(telemetry.battery && typeof telemetry.battery.percentage === 'number');
+
       return (
         <div className="bot-diagnostics-scroll">
           <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
               label="通信链路与协议栈"
               value={
-                telemetry.status === 'connected'
-                  ? telemetry.isSimulated
-                    ? '内置仿真引擎'
-                    : `在线 · ${telemetry.detectedProtocol.toUpperCase()}`
+                isConnected
+                  ? `在线 · ${telemetry.detectedProtocol.toUpperCase()}`
                   : telemetry.status === 'connecting'
-                    ? '握手中...'
-                    : '离线'
+                    ? '连接握手中...'
+                    : `离线 (重试 #${telemetry.reconnectAttempts})`
               }
               mono={false}
-              tone={telemetry.status === 'connected' ? 'success' : 'warning'}
+              tone={isConnected ? 'success' : 'warning'}
               icon={<Wifi className="h-4 w-4" />}
               hint={settings.rosUrl}
             />
             <StatCard
               label="机器人实时位姿"
-              value={`(${(telemetry.robotPose?.x || 0).toFixed(2)}, ${(telemetry.robotPose?.y || 0).toFixed(2)})`}
-              trend={`${yawDeg}°`}
+              value={
+                isConnected && telemetry.poseSource !== 'none'
+                  ? `(${(telemetry.robotPose?.x || 0).toFixed(2)}, ${(telemetry.robotPose?.y || 0).toFixed(2)})`
+                  : '--'
+              }
+              trend={isConnected && telemetry.poseSource !== 'none' ? `${yawDeg}°` : undefined}
               mono
               icon={<Compass className="h-4 w-4" />}
-              hint={`位姿源: ${telemetry.poseSource.toUpperCase()} · 地图: ${telemetry.selectedMap}`}
+              hint={`位姿源: ${telemetry.poseSource === 'none' ? '等待数据' : telemetry.poseSource.toUpperCase()}`}
             />
             <StatCard
               label="激光雷达有效点云"
-              value={`${telemetry.scanData?.length || 0} pts`}
+              value={isConnected ? `${telemetry.scanData?.length || 0} pts` : '--'}
               mono
               icon={<Radio className="h-4 w-4" />}
               hint={`Topic: ${topicInfo.scanTopic || '/scan'}`}
             />
             <StatCard
               label="动力电池健康度"
-              value={`${telemetry.battery?.percentage ?? 86}%`}
-              trend={`${(telemetry.battery?.voltage ?? 12.4).toFixed(1)}V / ${(telemetry.battery?.current ?? -1.2).toFixed(1)}A`}
+              value={hasBattery ? `${telemetry.battery.percentage}%` : '--'}
+              trend={
+                hasBattery
+                  ? `${telemetry.battery.voltage.toFixed(1)}V / ${telemetry.battery.current.toFixed(1)}A`
+                  : undefined
+              }
               mono
-              tone={(telemetry.battery?.percentage ?? 86) <= 20 ? 'danger' : 'default'}
+              tone={hasBattery && telemetry.battery.percentage <= 20 ? 'danger' : 'default'}
               icon={<Activity className="h-4 w-4" />}
               hint={`Topic: ${topicInfo.batteryTopic || '/battery_state'}`}
             />
@@ -488,7 +509,7 @@ export default function App() {
                   {
                     key: 'ros_proto',
                     label: '协议栈配置',
-                    value: `${settings.rosProtocol.toUpperCase()} → 当前生效: ${(
+                    value: `${settings.rosProtocol.toUpperCase()} → 当前契约: ${(
                       topicInfo.label || 'ROS 2 (Nav2)'
                     )}`
                   },
@@ -501,21 +522,24 @@ export default function App() {
                   },
                   {
                     key: 'maps',
-                    label: '已加载地图库',
-                    value: (
-                      <div className="flex flex-wrap gap-1">
-                        {telemetry.availableMaps.map((m) => (
-                          <StatusTag
-                            key={m}
-                            size="xs"
-                            tone={m === telemetry.selectedMap ? 'primary' : 'neutral'}
-                            dot={m === telemetry.selectedMap}
-                          >
-                            {m}
-                          </StatusTag>
-                        ))}
-                      </div>
-                    )
+                    label: '已记录地图历史',
+                    value:
+                      telemetry.availableMaps.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {telemetry.availableMaps.map((m) => (
+                            <StatusTag
+                              key={m}
+                              size="xs"
+                              tone={m === telemetry.selectedMap ? 'primary' : 'neutral'}
+                              dot={m === telemetry.selectedMap}
+                            >
+                              {m}
+                            </StatusTag>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-[var(--abc-fg-muted)]">暂无记录</span>
+                      )
                   }
                 ]}
               />
@@ -590,12 +614,12 @@ export default function App() {
             className={`bot-col-left ${activeMobileTab !== 'joystick' ? 'bot-mobile-hidden' : ''}`}
           >
             <CameraFeed
-              isSimulated={telemetry.isSimulated}
               streamUrl={settings.videoUrl}
               rtspDrawerOpen={rtspDrawerOpen}
               onRtspDrawerOpenChange={setRtspDrawerOpen}
             />
             <JoystickControl
+              connected={isConnected}
               linearVel={telemetry.linearVel}
               angularVel={telemetry.angularVel}
               battery={telemetry.battery}
@@ -668,12 +692,11 @@ export default function App() {
         routeProgress: true
       }}
       searchPlaceholder="指令与视图 (⌘K)..."
-      commandPlaceholder="输入视图名称、拼音或机器人指令（如：急停、建图、初始位置、导出地图、RTSP）..."
+      commandPlaceholder="输入视图名称、拼音或机器人指令（如：急停、重连、初始位置、导出地图、RTSP）..."
       commandActions={commandActions}
       headerExtra={
         <Header
           status={telemetry.status}
-          isSimulated={telemetry.isSimulated}
           rosUrl={settings.rosUrl}
           videoUrl={settings.videoUrl}
           rosProtocol={settings.rosProtocol}
@@ -691,7 +714,6 @@ export default function App() {
       {pathname !== '/cockpit' && pathname !== '/teleop' && rtspDrawerOpen && (
         <div className="hidden">
           <CameraFeed
-            isSimulated={telemetry.isSimulated}
             streamUrl={settings.videoUrl}
             rtspDrawerOpen={rtspDrawerOpen}
             onRtspDrawerOpenChange={setRtspDrawerOpen}

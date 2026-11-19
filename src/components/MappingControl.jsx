@@ -11,7 +11,7 @@ import {
 } from '@abc-design/react';
 import { rosService } from '../services/rosService';
 
-export default function MappingControl({ isRunning }) {
+export default function MappingControl({ connected = false, hasMap = false, isRunning }) {
   const { toast } = useAbcConfig();
   const [mapSaveName, setMapSaveName] = useState('my_room_map');
   const [saving, setSaving] = useState(false);
@@ -19,6 +19,11 @@ export default function MappingControl({ isRunning }) {
 
   const handleSaveMap = async (e) => {
     e.preventDefault();
+    if (!connected) {
+      toast.warning('请先连接机器人 ROS Bridge');
+      return;
+    }
+
     const clean = mapSaveName.trim();
     if (!clean) {
       toast.warning('请输入要保存的地图名称');
@@ -33,11 +38,11 @@ export default function MappingControl({ isRunning }) {
         const msg =
           res.mode === 'nav2'
             ? `已通过 Nav2 map_saver 保存地图「${clean}」`
-            : res.mode === 'slam_toolbox'
-              ? `已通过 slam_toolbox 保存地图「${clean}」`
-              : `栅格地图「${clean}」已保存并加入地图库`;
+            : `已通过 slam_toolbox 保存地图「${clean}」`;
         toast.success(msg);
         setTimeout(() => setSavedSuccess(false), 2200);
+      } else {
+        toast.warning('远端存图服务未响应，可使用右侧下载按钮直接导出本地 .pgm/.yaml');
       }
     } finally {
       setSaving(false);
@@ -50,7 +55,7 @@ export default function MappingControl({ isRunning }) {
     if (ok) {
       toast.success(`已导出 ${clean}.pgm 与 ${clean}.yaml`);
     } else {
-      toast.warning('当前暂无可导出的栅格地图数据');
+      toast.warning('当前尚未收到 /map 栅格地图数据，无法导出');
     }
   };
 
@@ -61,44 +66,45 @@ export default function MappingControl({ isRunning }) {
       title="SLAM 建图控制"
       extra={
         <StatusBadge
-          status={isRunning ? 'running' : 'stopped'}
-          label={isRunning ? '建图中' : '未运行'}
+          status={!connected ? 'unavailable' : isRunning ? 'running' : 'stopped'}
+          label={!connected ? '离线' : isRunning ? '建图中' : '未运行'}
         />
       }
     >
       <div className="space-y-3">
         <Button
           size="sm"
+          disabled={!connected}
           variant={isRunning ? 'danger' : 'primary'}
           block
           leftIcon={isRunning ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-          onClick={() => {
-            rosService.toggleMappingMode();
-            toast.info(
-              isRunning
-                ? '已停止 SLAM 建图，可保存或导出地图'
-                : '已开启 SLAM 建图：请使用摇杆或 WASD 移动探索环境'
-            );
+          onClick={async () => {
+            const ok = await rosService.toggleMappingMode();
+            if (ok) {
+              toast.info(isRunning ? '已发送停止建图指令' : '已发送启动建图指令');
+            }
           }}
         >
           {isRunning ? '停止 SLAM 建图' : '开始 SLAM 建图'}
         </Button>
 
         <form onSubmit={handleSaveMap} className="space-y-1.5">
-          <FormField label="持久化保存 / 导出 ROS 标准地图 (.pgm + .yaml)">
+          <FormField label="远端存图 / 导出标准地图 (.pgm + .yaml)">
             <div className="flex items-center gap-1.5">
               <div className="min-w-0 flex-1">
                 <Input
                   size="sm"
+                  disabled={!connected && !hasMap}
                   value={mapSaveName}
                   onChange={(e) => setMapSaveName(e.target.value)}
-                  placeholder="输入地图保存名称..."
+                  placeholder="输入地图名称..."
                   allowClear
                 />
               </div>
               <Button
                 type="submit"
                 size="sm"
+                disabled={!connected}
                 loading={saving}
                 variant={savedSuccess ? 'success' : 'outline'}
                 leftIcon={
@@ -107,10 +113,11 @@ export default function MappingControl({ isRunning }) {
               >
                 {savedSuccess ? '已存' : '保存'}
               </Button>
-              <Tooltip content="下载当前栅格地图为标准 ROS .pgm 与 .yaml 文件">
+              <Tooltip content="将当前收到的 /map 栅格数据直接下载为本地 .pgm 与 .yaml 文件">
                 <Button
                   type="button"
                   size="icon-sm"
+                  disabled={!hasMap}
                   variant="outline"
                   aria-label="导出 PGM 与 YAML 地图文件"
                   onClick={handleExportFiles}
