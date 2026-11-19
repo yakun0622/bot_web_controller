@@ -19,6 +19,7 @@ import {
   Input,
   Popover,
   ProgressBar,
+  Select,
   StatusBadge,
   StatusTag,
   Switch,
@@ -27,15 +28,13 @@ import {
 } from '@abc-design/react';
 import { rosService } from '../services/rosService';
 
-/**
- * Top bar telemetry & connection actions mounted in <ProLayout headerExtra={...} />
- * Plus controlled <Dialog> for quick ROS & Camera URL configuration (2 fields -> Dialog per ABC Design spec)
- */
 export default function Header({
   status,
   isSimulated,
   rosUrl,
   videoUrl,
+  rosProtocol = 'auto',
+  detectedProtocol = 'ros2',
   onSaveSettings,
   battery,
   settingsOpen: externalSettingsOpen,
@@ -48,10 +47,12 @@ export default function Header({
 
   const [tempRosUrl, setTempRosUrl] = useState(rosUrl);
   const [tempVideoUrl, setTempVideoUrl] = useState(videoUrl);
+  const [tempProtocol, setTempProtocol] = useState(rosProtocol);
 
   const openSettings = () => {
     setTempRosUrl(rosUrl);
     setTempVideoUrl(videoUrl);
+    setTempProtocol(rosProtocol || 'auto');
     setShowSettingsModal(true);
   };
 
@@ -63,7 +64,8 @@ export default function Header({
 
     onSaveSettings({
       rosUrl: nextRos,
-      videoUrl: nextVideo
+      videoUrl: nextVideo,
+      rosProtocol: tempProtocol
     });
     setShowSettingsModal(false);
     toast.info(`正在连接至 ${nextRos}`);
@@ -100,7 +102,7 @@ export default function Header({
       : status === 'connected'
         ? isSimulated
           ? '在线 · 仿真'
-          : '已连接'
+          : `已连接 · ${detectedProtocol.toUpperCase()}`
         : '未连接';
 
   return (
@@ -191,7 +193,10 @@ export default function Header({
                   rosService.setSimulationMode(true);
                   toast.success('已切换至内置仿真模式');
                 } else {
-                  rosService.connect(rosUrl, { fallbackToSimulation: true });
+                  rosService.connect(rosUrl, {
+                    fallbackToSimulation: true,
+                    rosProtocol
+                  });
                   toast.info(`正在尝试连接真机 ${rosUrl}`);
                 }
               }}
@@ -209,7 +214,7 @@ export default function Header({
         <Divider orientation="vertical" className="hidden sm:inline-block" />
 
         {/* Connection Settings Button */}
-        <Tooltip content="配置 ROS Bridge 与摄像头流地址">
+        <Tooltip content="配置 ROS 协议栈、WebSocket 端点与摄像头流地址">
           <Button
             size="xs"
             variant="outline"
@@ -221,12 +226,12 @@ export default function Header({
         </Tooltip>
       </div>
 
-      {/* Lightweight 2-field Connection Settings Dialog */}
+      {/* 3-field Connection Settings Dialog */}
       <Dialog
         open={showSettingsModal}
         onClose={() => setShowSettingsModal(false)}
         title="机器人通信与视频流配置"
-        description="配置 rosbridge_suite WebSocket 端点及机载摄像头 HTTP / RTSP 视频流地址"
+        description="支持 ROS 2 (Nav2) 与 ROS 1 (move_base) 双协议自动识别及机载 HTTP / RTSP 视频流接入"
         size="md"
         fullscreenable={false}
         footer={
@@ -242,9 +247,25 @@ export default function Header({
       >
         <form onSubmit={handleConnect} className="space-y-4">
           <FormField
+            label="ROS 协议栈与导航契约版本"
+            helperText="自动探测将通过 rosbridge 话题图自动匹配 ROS 2 (/goal_pose, /plan) 或 ROS 1 (/move_base_simple/goal)"
+          >
+            <Select
+              size="sm"
+              value={tempProtocol}
+              onChange={(val) => setTempProtocol(String(val || 'auto'))}
+              options={[
+                { value: 'auto', label: '自动探测 (推荐，兼容 ROS 2 Nav2 与 ROS 1)' },
+                { value: 'ros2', label: '强制 ROS 2 (Nav2 · pkg/msg/Type)' },
+                { value: 'ros1', label: '强制 ROS 1 (move_base · pkg/Type)' }
+              ]}
+            />
+          </FormField>
+
+          <FormField
             label="ROS Bridge WebSocket 地址"
             required
-            helperText="示例: ws://192.168.2.88:9090 或 ws://localhost:9090（超时自动回退仿真模式）"
+            helperText="示例: ws://192.168.2.88:9090 或 ws://localhost:9090（连接超时自动进入内置仿真模式）"
           >
             <Input
               size="sm"

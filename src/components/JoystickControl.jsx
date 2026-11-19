@@ -1,5 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Battery, BatteryCharging, Gauge, Keyboard, Move, RotateCw, ShieldAlert, Zap } from 'lucide-react';
+import {
+  Battery,
+  BatteryCharging,
+  Gauge,
+  Keyboard,
+  Move,
+  RotateCw,
+  ShieldAlert,
+  Zap
+} from 'lucide-react';
 import { Button, Card, StatCard, StatusTag, useAbcConfig } from '@abc-design/react';
 import { rosService } from '../services/rosService';
 
@@ -13,19 +22,32 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
   const [maxLinear, setMaxLinear] = useState(0.5); // m/s
   const [maxAngular, setMaxAngular] = useState(1.0); // rad/s
 
+  // Continuous 10Hz heartbeat state to prevent ROS cmd_vel_mux / base controller watchdog timeout
+  const activeCmdRef = useRef({ active: false, lx: 0, az: 0 });
+
   const radius = 64;
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (activeCmdRef.current.active) {
+        rosService.publishTwist(
+          { x: activeCmdRef.current.lx, y: 0, z: 0 },
+          { x: 0, y: 0, z: activeCmdRef.current.az }
+        );
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
 
   const updateVelFromOffset = (dx, dy) => {
     const normX = dx / radius;
     const normY = dy / radius;
 
-    const linearX = -normY * maxLinear;
-    const angularZ = -normX * maxAngular;
+    const linearX = Number((-normY * maxLinear).toFixed(2));
+    const angularZ = Number((-normX * maxAngular).toFixed(2));
 
-    rosService.publishTwist(
-      { x: Number(linearX.toFixed(2)), y: 0, z: 0 },
-      { x: 0, y: 0, z: Number(angularZ.toFixed(2)) }
-    );
+    activeCmdRef.current = { active: true, lx: linearX, az: angularZ };
+    rosService.publishTwist({ x: linearX, y: 0, z: 0 }, { x: 0, y: 0, z: angularZ });
   };
 
   const handlePointerDown = (e) => {
@@ -63,6 +85,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
     if (!isDragging) return;
     setIsDragging(false);
     setKnobPos({ x: 0, y: 0 });
+    activeCmdRef.current = { active: false, lx: 0, az: 0 };
     rosService.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
   };
 
@@ -70,34 +93,51 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
   useEffect(() => {
     const activeKeys = new Set();
 
+    const syncKeyboardTwist = () => {
+      if (activeKeys.size === 0) {
+        activeCmdRef.current = { active: false, lx: 0, az: 0 };
+        rosService.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+        return;
+      }
+
+      let lx = 0;
+      let az = 0;
+
+      if (activeKeys.has('w') || activeKeys.has('arrowup')) lx += maxLinear;
+      if (activeKeys.has('s') || activeKeys.has('arrowdown')) lx -= maxLinear;
+      if (activeKeys.has('a') || activeKeys.has('arrowleft')) az += maxAngular;
+      if (activeKeys.has('d') || activeKeys.has('arrowright')) az -= maxAngular;
+
+      const cleanLx = Number(lx.toFixed(2));
+      const cleanAz = Number(az.toFixed(2));
+      activeCmdRef.current = { active: true, lx: cleanLx, az: cleanAz };
+      rosService.publishTwist({ x: cleanLx, y: 0, z: 0 }, { x: 0, y: 0, z: cleanAz });
+    };
+
     const handleKeyDown = (e) => {
       const tag = document.activeElement?.tagName?.toUpperCase();
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) {
+      if (
+        tag === 'INPUT' ||
+        tag === 'SELECT' ||
+        tag === 'TEXTAREA' ||
+        document.activeElement?.isContentEditable
+      ) {
         return;
       }
 
       const key = e.key.toLowerCase();
       if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
-        if (key === ' ') e.preventDefault();
-        activeKeys.add(key);
+        if (key === ' ' || key.startsWith('arrow')) e.preventDefault();
 
-        let lx = 0;
-        let az = 0;
-
-        if (activeKeys.has('w') || activeKeys.has('arrowup')) lx += maxLinear;
-        if (activeKeys.has('s') || activeKeys.has('arrowdown')) lx -= maxLinear;
-        if (activeKeys.has('a') || activeKeys.has('arrowleft')) az += maxAngular;
-        if (activeKeys.has('d') || activeKeys.has('arrowright')) az -= maxAngular;
-
-        if (activeKeys.has(' ')) {
+        if (key === ' ') {
+          activeKeys.clear();
+          activeCmdRef.current = { active: false, lx: 0, az: 0 };
           rosService.emergencyStop();
           return;
         }
 
-        rosService.publishTwist(
-          { x: Number(lx.toFixed(2)), y: 0, z: 0 },
-          { x: 0, y: 0, z: Number(az.toFixed(2)) }
-        );
+        activeKeys.add(key);
+        syncKeyboardTwist();
       }
     };
 
@@ -105,17 +145,24 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
       const key = e.key.toLowerCase();
       if (!activeKeys.has(key)) return;
       activeKeys.delete(key);
+      syncKeyboardTwist();
+    };
 
-      if (activeKeys.size === 0) {
+    const handleWindowBlur = () => {
+      if (activeKeys.size > 0) {
+        activeKeys.clear();
+        activeCmdRef.current = { active: false, lx: 0, az: 0 };
         rosService.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
     };
   }, [maxLinear, maxAngular]);
 
@@ -244,6 +291,7 @@ export default function JoystickControl({ linearVel, angularVel, battery }) {
           block
           leftIcon={<ShieldAlert className="h-4 w-4" />}
           onClick={() => {
+            activeCmdRef.current = { active: false, lx: 0, az: 0 };
             rosService.emergencyStop();
             toast.warning('已触发紧急停止 (/cmd_vel 归零)');
           }}
