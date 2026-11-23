@@ -1,9 +1,42 @@
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createBotGatewayMiddleware, shutdownBotGateway } from './bot-gateway.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PARENT_DIR = path.resolve(__dirname, '..');
+const DIST_DIR = path.resolve(PARENT_DIR, 'dist');
+
+function resolveStaticRoot() {
+  if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) return DIST_DIR;
+  if (
+    fs.existsSync(path.join(PARENT_DIR, 'index.html')) &&
+    fs.existsSync(path.join(PARENT_DIR, 'assets'))
+  ) {
+    return PARENT_DIR;
+  }
+  return null;
+}
 
 export const RTSP_PROXY_PATH = '/api/rtsp';
 export const RTSP_PROXY_PORT = Number(process.env.RTSP_PROXY_PORT || 8081);
+
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2'
+};
 
 let ffmpegAvailable = null;
 
@@ -23,7 +56,7 @@ function parseRtspUrl(raw) {
   try {
     decoded = decodeURIComponent(decoded).trim();
   } catch {
-    // keep original if it is not URI-encoded
+    // keep original if not URI-encoded
   }
   const lower = decoded.toLowerCase();
   if (!lower.startsWith('rtsp://') && !lower.startsWith('rtsps://')) return null;
@@ -45,14 +78,20 @@ function writeJson(res, status, payload) {
 function startFfmpeg(rtspUrl, transport) {
   const args = [
     '-hide_banner',
-    '-loglevel', 'error',
+    '-loglevel',
+    'error',
     '-nostdin',
-    '-rtsp_transport', transport,
-    '-i', rtspUrl,
+    '-rtsp_transport',
+    transport,
+    '-i',
+    rtspUrl,
     '-an',
-    '-r', '15',
-    '-q:v', '6',
-    '-f', 'mpjpeg',
+    '-r',
+    '15',
+    '-q:v',
+    '6',
+    '-f',
+    'mpjpeg',
     'pipe:1'
   ];
   return spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -114,7 +153,7 @@ export function createRtspMiddleware({ pathPrefix = RTSP_PROXY_PATH } = {}) {
       if (!ok) {
         writeJson(res, 503, {
           error: 'ffmpeg not found',
-          hint: '请先安装 ffmpeg，然后重启 RTSP 代理'
+          hint: '请先安装 ffmpeg，然后重启服务'
         });
         return;
       }
@@ -192,19 +231,69 @@ export function createRtspMiddleware({ pathPrefix = RTSP_PROXY_PATH } = {}) {
   };
 }
 
+function serveStaticDist(req, res) {
+  const staticRoot = resolveStaticRoot();
+  if (!staticRoot) {
+    writeJson(res, 404, {
+      error: 'dist not built',
+      hint: 'Run npm run build first, or access /api/bot/health'
+    });
+    return;
+  }
+
+  let pathname = '/';
+  try {
+    pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+  } catch {
+    pathname = '/';
+  }
+
+  if (pathname === '/server' || pathname.startsWith('/server/')) {
+    writeJson(res, 404, { error: 'not found' });
+    return;
+  }
+
+  const safeRel = path.normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, '').replace(/^[/\\]+/, '');
+  let targetFile = path.resolve(staticRoot, safeRel || 'index.html');
+  if (!targetFile.startsWith(staticRoot + path.sep) && targetFile !== staticRoot) {
+    writeJson(res, 403, { error: 'forbidden' });
+    return;
+  }
+
+  if (!fs.existsSync(targetFile) || fs.statSync(targetFile).isDirectory()) {
+    targetFile = path.join(staticRoot, 'index.html');
+  }
+
+  const ext = path.extname(targetFile).toLowerCase();
+  res.statusCode = 200;
+  res.setHeader('Content-Type', MIME_TYPES[ext] || 'application/octet-stream');
+  fs.createReadStream(targetFile).pipe(res);
+}
+
 function startStandaloneServer() {
-  const middleware = createRtspMiddleware();
+  const botGateway = createBotGatewayMiddleware();
+  const rtspProxy = createRtspMiddleware();
+
   const server = http.createServer((req, res) => {
-    middleware(req, res, () => {
-      writeJson(res, 404, {
-        error: 'not found',
-        hint: `${RTSP_PROXY_PATH}/mjpeg?url=rtsp://...`
+    botGateway(req, res, () => {
+      rtspProxy(req, res, () => {
+        serveStaticDist(req, res);
       });
     });
   });
 
+  const gracefulStop = () => {
+    shutdownBotGateway();
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 500).unref();
+  };
+  process.once('SIGINT', gracefulStop);
+  process.once('SIGTERM', gracefulStop);
+
   server.listen(RTSP_PROXY_PORT, '0.0.0.0', () => {
-    console.log(`[rtsp-proxy] http://0.0.0.0:${RTSP_PROXY_PORT}${RTSP_PROXY_PATH}/mjpeg?url=rtsp://...`);
+    console.log(`[w152d-server] Web Console & Direct Bot Gateway listening on http://0.0.0.0:${RTSP_PROXY_PORT}`);
+    console.log(`[w152d-server] Bot Gateway API: http://0.0.0.0:${RTSP_PROXY_PORT}/api/bot/health`);
+    console.log(`[w152d-server] RTSP Proxy API:  http://0.0.0.0:${RTSP_PROXY_PORT}${RTSP_PROXY_PATH}/health`);
   });
 }
 

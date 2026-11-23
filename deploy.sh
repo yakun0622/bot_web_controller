@@ -77,13 +77,16 @@ rsync \
   "$PROJECT_DIR/dist/" \
   "$DEPLOY_TARGET:${DEPLOY_PATH%/}/"
 
-echo "[4/4] 同步并尝试启动 RTSP 代理"
+echo "[4/4] 同步并启动 W152D 一体化直连中控服务 (:8081)"
 ssh -p "$DEPLOY_PORT" "$DEPLOY_TARGET" "mkdir -p '${DEPLOY_PATH%/}/server'"
 rsync \
   --archive \
   --compress \
   -e "ssh -p $DEPLOY_PORT" \
   "$PROJECT_DIR/server/rtsp-proxy.mjs" \
+  "$PROJECT_DIR/server/bot-gateway.mjs" \
+  "$PROJECT_DIR/server/mavlink-serial.mjs" \
+  "$PROJECT_DIR/server/ros2-bridge-worker.py" \
   "$PROJECT_DIR/server/bot-rtsp-proxy.service" \
   "$PROJECT_DIR/server/nginx-rtsp.conf" \
   "$DEPLOY_TARGET:${DEPLOY_PATH%/}/server/"
@@ -91,12 +94,10 @@ rsync \
 ssh -p "$DEPLOY_PORT" "$DEPLOY_TARGET" "bash -s" <<EOF
 set -e
 DEPLOY_PATH='${DEPLOY_PATH%/}'
+chmod +x "\$DEPLOY_PATH/server/ros2-bridge-worker.py" 2>/dev/null || true
 if ! command -v node >/dev/null 2>&1; then
-  echo "警告: 远端未找到 node，跳过 RTSP 代理启动。"
+  echo "警告: 远端未找到 node，跳过 W152D 直连网关启动。"
   exit 0
-fi
-if ! command -v ffmpeg >/dev/null 2>&1; then
-  echo "警告: 远端未找到 ffmpeg，RTSP 预览需要先安装 ffmpeg。"
 fi
 PID_FILE="/var/run/bot-rtsp-proxy.pid"
 if [[ -f "\$PID_FILE" ]]; then
@@ -108,8 +109,8 @@ if [[ -f "\$PID_FILE" ]]; then
 fi
 nohup node "\$DEPLOY_PATH/server/rtsp-proxy.mjs" > /var/log/bot-rtsp-proxy.log 2>&1 &
 echo \$! > "\$PID_FILE"
-echo "RTSP 代理已启动: http://0.0.0.0:8081/api/rtsp"
+echo "W152D 一体化 Web 与串口/ROS2 直连服务已启动: http://0.0.0.0:8081"
 EOF
 
 echo "发布完成: $DEPLOY_TARGET:$DEPLOY_PATH"
-echo "RTSP 预览依赖远端 ffmpeg + 8081 端口代理；如需同源访问，可将 server/nginx-rtsp.conf 加入 nginx。"
+echo "可直接浏览器访问 http://<W152D-IP>:8081（已内置静态页 + /dev/ttyUSB0 MAVLink 直连 + 本机 ROS2 网关 + RTSP 转码）。"

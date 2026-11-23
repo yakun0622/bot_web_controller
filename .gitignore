@@ -29,7 +29,9 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
-# ROS 2 workspace output (if built from this directory)
+# ROS 2 workspace output & Python bytecode
 build/
 install/
 log/
+__pycache__/
+*.py[cod]

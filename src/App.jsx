@@ -3,12 +3,14 @@ import {
   Activity,
   Bot,
   Compass,
+  Cpu,
   Gamepad2,
   Map,
   Radio,
   Settings,
   SlidersHorizontal,
   Trash2,
+  Usb,
   Wifi
 } from 'lucide-react';
 import {
@@ -27,12 +29,15 @@ import Header from './components/Header';
 import JoystickControl from './components/JoystickControl';
 import CameraFeed from './components/CameraFeed';
 import MapViewer from './components/MapViewer';
+import W152DControl from './components/W152DControl';
 import MappingControl from './components/MappingControl';
 import NavigationControl from './components/NavigationControl';
 import LayerControl from './components/LayerControl';
 import { rosService } from './services/rosService';
 
 const DEFAULT_SETTINGS = {
+  connectionMode: 'w152d', // 'w152d' | 'rosbridge'
+  gatewayUrl: '',
   rosUrl: 'ws://192.168.2.88:9090',
   videoUrl: 'http://192.168.2.165:81',
   rosProtocol: 'auto'
@@ -53,7 +58,7 @@ const MENU_ITEMS = [
     label: '全景驾驶舱',
     path: '/cockpit',
     icon: 'LayoutDashboard',
-    keywords: ['cockpit', 'slam', 'teleop', '全景', '驾驶舱', '中控']
+    keywords: ['cockpit', 'w152d', 'slam', 'teleop', '全景', '驾驶舱', '中控']
   },
   {
     key: 'map',
@@ -74,7 +79,7 @@ const MENU_ITEMS = [
     label: '链路与遥测',
     path: '/diagnostics',
     icon: 'Activity',
-    keywords: ['ros', 'topics', 'logs', 'diagnostics', '遥测', '话题', '日志']
+    keywords: ['w152d', 'serial', 'mavlink', 'ros', 'topics', 'logs', '遥测', '串口', '日志']
   }
 ];
 
@@ -88,6 +93,17 @@ export default function App() {
 
   const [telemetry, setTelemetry] = useState({
     status: 'disconnected',
+    connectionMode: 'w152d',
+    gatewayOnline: false,
+    gatewayBase: '',
+    driverMode: 'mavlink_serial',
+    serialConnected: false,
+    ros2Connected: false,
+    serialPort: '/dev/ttyUSB0',
+    serialBaud: 921600,
+    serialDeviceExists: false,
+    rosAvailable: false,
+    managedNodes: {},
     rosProtocol: 'auto',
     detectedProtocol: 'ros2',
     activeTopicSummary: null,
@@ -128,6 +144,9 @@ export default function App() {
   const [isSettingGoalPose, setIsSettingGoalPose] = useState(false);
 
   const isConnected = telemetry.status === 'connected';
+  const isW152D = settings.connectionMode === 'w152d';
+  const isNavReady =
+    isConnected && (!isW152D || telemetry.driverMode === 'local_ros2');
   const hasMap = Boolean(telemetry.mapData?.info && telemetry.mapData?.data);
 
   useEffect(() => {
@@ -135,7 +154,10 @@ export default function App() {
       setTelemetry(data);
     });
 
-    rosService.connect(settings.rosUrl, {
+    const targetUrl =
+      settings.connectionMode === 'w152d' ? settings.gatewayUrl : settings.rosUrl;
+    rosService.connect(targetUrl, {
+      connectionMode: settings.connectionMode,
       rosProtocol: settings.rosProtocol,
       autoReconnect: true
     });
@@ -147,17 +169,29 @@ export default function App() {
   }, []);
 
   const handleSaveSettings = (nextSettings) => {
-    const merged = { ...DEFAULT_SETTINGS, ...nextSettings };
+    const merged = { ...DEFAULT_SETTINGS, ...settings, ...nextSettings };
     setSettings(merged);
     try {
       localStorage.setItem('bot-controller-settings', JSON.stringify(merged));
     } catch (error) {
       console.warn('Unable to persist connection settings:', error);
     }
-    rosService.connect(merged.rosUrl, {
+    const targetUrl = merged.connectionMode === 'w152d' ? merged.gatewayUrl : merged.rosUrl;
+    rosService.connect(targetUrl, {
+      connectionMode: merged.connectionMode,
       rosProtocol: merged.rosProtocol,
       autoReconnect: true
     });
+  };
+
+  const handleUseRosCamera = () => {
+    const mjpegUrl = rosService.getW152DCameraStreamUrl();
+    const merged = { ...settings, videoUrl: mjpegUrl };
+    setSettings(merged);
+    try {
+      localStorage.setItem('bot-controller-settings', JSON.stringify(merged));
+    } catch {}
+    toast.success('已将监控画面切换为 W152D 本机 ROS 压缩图像流');
   };
 
   const handleToggleLayer = (layerKey) => {
@@ -186,8 +220,12 @@ export default function App() {
   };
 
   const handleStartInitialPose = () => {
-    if (!isConnected) {
-      toast.warning('请先连接机器人 ROS Bridge');
+    if (!isNavReady) {
+      toast.warning(
+        isW152D && telemetry.driverMode === 'mavlink_serial'
+          ? '请先在右侧「W152D 机载直连控制」切换为「本机 ROS 2 导航」模式'
+          : '请先连接上位机并确保 ROS 2 已就绪'
+      );
       return;
     }
     setIsSettingGoalPose(false);
@@ -197,8 +235,12 @@ export default function App() {
   };
 
   const handleStartGoalPose = () => {
-    if (!isConnected) {
-      toast.warning('请先连接机器人 ROS Bridge');
+    if (!isNavReady) {
+      toast.warning(
+        isW152D && telemetry.driverMode === 'mavlink_serial'
+          ? '请先在右侧「W152D 机载直连控制」切换为「本机 ROS 2 导航」模式'
+          : '请先连接上位机并确保 ROS 2 已就绪'
+      );
       return;
     }
     setIsSettingInitialPose(false);
@@ -217,7 +259,7 @@ export default function App() {
       {
         id: 'bot_estop',
         title: '紧急制动 / 急停 (Emergency Stop)',
-        subtitle: '立即向 /cmd_vel 下发零速度并取消活动导航目标',
+        subtitle: '立即通过串口 MAVLink 或 /cmd_vel 下发零速度制动',
         badge: 'Space',
         group: '机器人控制',
         priority: 100,
@@ -228,21 +270,36 @@ export default function App() {
         }
       },
       {
+        id: 'bot_switch_serial',
+        title: '切换为 W152D USB 串口直连模式 (MAVLink)',
+        subtitle: `直连 ${telemetry.serialPort} @ ${telemetry.serialBaud}，免启动 ROS 2`,
+        group: 'W152D 上位机',
+        priority: 96,
+        keywords: ['w152d', 'serial', 'mavlink', 'usb', '串口', '直连'],
+        onTrigger: () => rosService.setW152DDriverMode('mavlink_serial')
+      },
+      {
+        id: 'bot_switch_ros2',
+        title: '切换为 W152D 本机 ROS 2 导航直通模式',
+        subtitle: '释放串口占用并启用本机 rclpy 桥接，支持 SLAM 与 Nav2',
+        group: 'W152D 上位机',
+        priority: 94,
+        keywords: ['w152d', 'ros2', 'slam', 'nav2', '导航'],
+        onTrigger: () => rosService.setW152DDriverMode('local_ros2')
+      },
+      {
         id: 'bot_reconnect',
-        title: '立即重新连接 ROS Bridge',
-        subtitle: `目标端点: ${settings.rosUrl} (${settings.rosProtocol.toUpperCase()})`,
+        title: '立即重新连接上位机网关',
         group: '通信与流媒体',
-        priority: 95,
-        keywords: ['reconnect', 'connect', 'ros', '重连', '连接'],
+        keywords: ['reconnect', 'connect', '重连', '连接'],
         onTrigger: () => {
           rosService.reconnect();
-          toast.info(`正在尝试重连 ${settings.rosUrl}`);
+          toast.info('正在重新连接...');
         }
       },
       {
         id: 'bot_initial_pose',
         title: '标定机器人初始位姿 (2D Pose Estimate)',
-        subtitle: '在地图拖拽方向箭头，发布带四元数朝向的 /initialpose',
         group: '导航与建图',
         keywords: ['initialpose', 'amcl', '初始位置', '位姿'],
         onTrigger: handleStartInitialPose
@@ -250,7 +307,6 @@ export default function App() {
       {
         id: 'bot_goal_pose',
         title: '拖拽设定带朝向的目标位姿 (2D Goal Pose)',
-        subtitle: '在地图按住拖拽方向箭头，发布精确到达偏航角',
         group: '导航与建图',
         keywords: ['goal', 'goal_pose', '目标点', '导航'],
         onTrigger: handleStartGoalPose
@@ -258,7 +314,6 @@ export default function App() {
       {
         id: 'bot_export_map',
         title: '导出当前地图为标准 ROS 文件 (.pgm + .yaml)',
-        subtitle: hasMap ? `当前地图: ${telemetry.selectedMap || 'active_map'}` : '需先收到 /map 话题数据',
         group: '导航与建图',
         keywords: ['export', 'pgm', 'yaml', '导出地图', '保存地图'],
         onTrigger: () => {
@@ -266,78 +321,71 @@ export default function App() {
           if (rosService.exportCurrentMapFiles(name)) {
             toast.success(`已导出 ${name}.pgm 与 .yaml`);
           } else {
-            toast.warning('当前尚未收到 /map 话题数据');
+            toast.warning('当前尚未收到 /map 栅格地图数据');
           }
         }
       },
       {
-        id: 'bot_toggle_mapping',
-        title: telemetry.mappingRunning ? '停止 SLAM 建图' : '启动 SLAM 建图',
-        group: '导航与建图',
-        keywords: ['slam', 'mapping', '建图'],
-        onTrigger: () => {
-          if (!isConnected) toast.warning('请先连接 ROS Bridge');
-          else rosService.toggleMappingMode();
-        }
-      },
-      {
-        id: 'bot_toggle_nav',
-        title: telemetry.navigationRunning ? '停止自主导航' : '启用自主导航',
-        group: '导航与建图',
-        keywords: ['navigation', 'nav2', 'move_base', '导航'],
-        onTrigger: () => {
-          if (!isConnected) toast.warning('请先连接 ROS Bridge');
-          else rosService.toggleNavigationMode();
-        }
-      },
-      {
         id: 'bot_open_conn',
-        title: '打开 ROS 协议与摄像头地址设置',
-        subtitle: `${settings.rosUrl} · ${settings.rosProtocol.toUpperCase()}`,
+        title: '打开上位机接入模式与摄像头设置',
         group: '通信与流媒体',
-        keywords: ['settings', 'websocket', 'rosbridge', 'ros2', '设置', '连接'],
+        keywords: ['settings', 'w152d', 'rosbridge', '设置', '连接'],
         onTrigger: () => setSettingsOpen(true)
       },
       {
         id: 'bot_open_rtsp',
         title: '打开 RTSP → MJPEG 视频转码配置抽屉',
-        subtitle: '切换 TCP/UDP 传输协议与 FFmpeg 代理端点',
         group: '通信与流媒体',
         keywords: ['rtsp', 'ffmpeg', 'mjpeg', '摄像头', '转码'],
         onTrigger: () => setRtspDrawerOpen(true)
       }
     ],
     [
-      isConnected,
-      hasMap,
-      telemetry.mappingRunning,
-      telemetry.navigationRunning,
+      isNavReady,
+      telemetry.serialPort,
+      telemetry.serialBaud,
       telemetry.selectedMap,
-      telemetry.multiPointNav,
-      settings.rosUrl,
-      settings.rosProtocol
+      telemetry.multiPointNav
     ]
   );
 
   const renderControlPanels = () => (
     <>
-      <MappingControl
-        connected={isConnected}
-        hasMap={hasMap}
-        isRunning={telemetry.mappingRunning}
-      />
-      <NavigationControl
-        connected={isConnected}
-        isRunning={telemetry.navigationRunning}
-        selectedMap={telemetry.selectedMap}
-        availableMaps={telemetry.availableMaps}
-        multiPointNav={telemetry.multiPointNav}
-        loopWaypoints={telemetry.loopWaypoints}
-        waypoints={telemetry.waypoints}
-        activeWaypointIndex={telemetry.activeWaypointIndex}
-        onSetInitialPose={handleStartInitialPose}
-        onSetGoalPose={handleStartGoalPose}
-      />
+      {isW152D && (
+        <W152DControl
+          gatewayOnline={telemetry.gatewayOnline}
+          driverMode={telemetry.driverMode}
+          serialConnected={telemetry.serialConnected}
+          ros2Connected={telemetry.ros2Connected}
+          serialPort={telemetry.serialPort}
+          serialBaud={telemetry.serialBaud}
+          serialDeviceExists={telemetry.serialDeviceExists}
+          rosAvailable={telemetry.rosAvailable}
+          managedNodes={telemetry.managedNodes}
+          onUseRosCamera={handleUseRosCamera}
+        />
+      )}
+      {(!isW152D || telemetry.driverMode === 'local_ros2') && (
+        <>
+          <MappingControl
+            connected={isNavReady}
+            hasMap={hasMap}
+            isRunning={telemetry.mappingRunning}
+          />
+          <NavigationControl
+            connected={isNavReady}
+            isRunning={telemetry.navigationRunning}
+            selectedMap={telemetry.selectedMap}
+            availableMaps={telemetry.availableMaps}
+            multiPointNav={telemetry.multiPointNav}
+            loopWaypoints={telemetry.loopWaypoints}
+            waypoints={telemetry.waypoints}
+            activeWaypointIndex={telemetry.activeWaypointIndex}
+            onSetInitialPose={handleStartInitialPose}
+            onSetGoalPose={handleStartGoalPose}
+          />
+        </>
+      )}
       <LayerControl
         layers={layers}
         onToggleLayer={handleToggleLayer}
@@ -349,6 +397,11 @@ export default function App() {
   const renderMapViewer = () => (
     <MapViewer
       status={telemetry.status}
+      connectionMode={settings.connectionMode}
+      gatewayOnline={telemetry.gatewayOnline}
+      driverMode={telemetry.driverMode}
+      serialPort={telemetry.serialPort}
+      serialBaud={telemetry.serialBaud}
       rosUrl={settings.rosUrl}
       mapData={telemetry.mapData}
       costmapData={telemetry.costmapData}
@@ -385,8 +438,8 @@ export default function App() {
             maxSize={440}
             collapsible
             storageKey="bot_map_control_pane"
-            collapseLabel="收起导航控制栏"
-            expandLabel="展开导航控制栏"
+            collapseLabel="收起控制栏"
+            expandLabel="展开控制栏"
             className="flex-1"
             firstPane={<div className="space-y-3 pr-1">{renderControlPanels()}</div>}
             secondPane={<div className="flex h-full min-h-0 flex-col">{renderMapViewer()}</div>}
@@ -416,28 +469,35 @@ export default function App() {
       );
     }
 
-    // View 4: ROS Diagnostics, Topics & Real-Time Event Log
+    // View 4: Diagnostics, W152D Hardware Status & Real-Time Event Log
     if (pathname === '/diagnostics') {
       const yawDeg = (((telemetry.robotPose?.theta || 0) * 180) / Math.PI).toFixed(1);
-      const topicInfo = telemetry.activeTopicSummary || {};
       const hasBattery = Boolean(telemetry.battery && typeof telemetry.battery.percentage === 'number');
 
       return (
         <div className="bot-diagnostics-scroll">
           <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
-              label="通信链路与协议栈"
+              label="上位机直连模式"
               value={
-                isConnected
-                  ? `在线 · ${telemetry.detectedProtocol.toUpperCase()}`
-                  : telemetry.status === 'connecting'
-                    ? '连接握手中...'
-                    : `离线 (重试 #${telemetry.reconnectAttempts})`
+                isW152D
+                  ? telemetry.gatewayOnline
+                    ? telemetry.driverMode === 'mavlink_serial'
+                      ? 'W152D · 串口直连'
+                      : 'W152D · 本机ROS2'
+                    : 'W152D · 网关离线'
+                  : isConnected
+                    ? `Rosbridge · ${telemetry.detectedProtocol.toUpperCase()}`
+                    : 'Rosbridge · 离线'
               }
               mono={false}
-              tone={isConnected ? 'success' : 'warning'}
-              icon={<Wifi className="h-4 w-4" />}
-              hint={settings.rosUrl}
+              tone={isConnected ? 'success' : telemetry.gatewayOnline ? 'primary' : 'warning'}
+              icon={isW152D ? <Usb className="h-4 w-4" /> : <Wifi className="h-4 w-4" />}
+              hint={
+                isW152D
+                  ? `${telemetry.serialPort} @ ${telemetry.serialBaud} bps`
+                  : settings.rosUrl
+              }
             />
             <StatCard
               label="机器人实时位姿"
@@ -452,11 +512,15 @@ export default function App() {
               hint={`位姿源: ${telemetry.poseSource === 'none' ? '等待数据' : telemetry.poseSource.toUpperCase()}`}
             />
             <StatCard
-              label="激光雷达有效点云"
+              label="360° 激光雷达点云"
               value={isConnected ? `${telemetry.scanData?.length || 0} pts` : '--'}
               mono
               icon={<Radio className="h-4 w-4" />}
-              hint={`Topic: ${topicInfo.scanTopic || '/scan'}`}
+              hint={
+                isW152D && telemetry.driverMode === 'mavlink_serial'
+                  ? 'MAVLink OBSTACLE_DISTANCE (#330)'
+                  : 'ROS 2 /scan (LaserScan)'
+              }
             />
             <StatCard
               label="动力电池健康度"
@@ -469,15 +533,46 @@ export default function App() {
               mono
               tone={hasBattery && telemetry.battery.percentage <= 20 ? 'danger' : 'default'}
               icon={<Activity className="h-4 w-4" />}
-              hint={`Topic: ${topicInfo.batteryTopic || '/battery_state'}`}
+              hint={
+                isW152D && telemetry.driverMode === 'mavlink_serial'
+                  ? 'MAVLink SYS_STATUS (#1)'
+                  : 'ROS 2 /battery_state · /voltage'
+              }
             />
           </dl>
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {isW152D ? (
+              <W152DControl
+                gatewayOnline={telemetry.gatewayOnline}
+                driverMode={telemetry.driverMode}
+                serialConnected={telemetry.serialConnected}
+                ros2Connected={telemetry.ros2Connected}
+                serialPort={telemetry.serialPort}
+                serialBaud={telemetry.serialBaud}
+                serialDeviceExists={telemetry.serialDeviceExists}
+                rosAvailable={telemetry.rosAvailable}
+                managedNodes={telemetry.managedNodes}
+                onUseRosCamera={handleUseRosCamera}
+              />
+            ) : (
+              <Card size="sm" padding="md" title="外部 Rosbridge 连接状态">
+                <DescriptionList
+                  columns={1}
+                  density="compact"
+                  variant="divided"
+                  items={[
+                    { key: 'url', label: 'WebSocket 地址', value: settings.rosUrl, mono: true },
+                    { key: 'proto', label: '协议版本', value: telemetry.detectedProtocol.toUpperCase() }
+                  ]}
+                />
+              </Card>
+            )}
+
             <Card
               size="sm"
               padding="md"
-              title="端点与流媒体配置摘要"
+              title="W152D 直连通信契约摘要"
               extra={
                 <div className="flex items-center gap-1.5">
                   <Button
@@ -486,10 +581,10 @@ export default function App() {
                     leftIcon={<Settings className="h-3.5 w-3.5" />}
                     onClick={() => setSettingsOpen(true)}
                   >
-                    修改连接地址
+                    连接配置
                   </Button>
                   <Button size="xs" variant="outline" onClick={() => setRtspDrawerOpen(true)}>
-                    RTSP 转码配置
+                    RTSP 配置
                   </Button>
                 </div>
               }
@@ -500,39 +595,32 @@ export default function App() {
                 variant="divided"
                 items={[
                   {
-                    key: 'ros_url',
-                    label: 'ROS Bridge 地址',
-                    value: settings.rosUrl,
-                    mono: true,
-                    copyValue: settings.rosUrl
+                    key: 'arch',
+                    label: '网关接口',
+                    value: `${telemetry.gatewayBase || '同源'}/api/bot (SSE 实时流 + HTTP 低延迟控制，免 9090 端口)`,
+                    mono: true
                   },
                   {
-                    key: 'ros_proto',
-                    label: '协议栈配置',
-                    value: `${settings.rosProtocol.toUpperCase()} → 当前契约: ${(
-                      topicInfo.label || 'ROS 2 (Nav2)'
-                    )}`
+                    key: 'serial',
+                    label: '串口协议',
+                    value: `${telemetry.serialPort} @ ${telemetry.serialBaud} · MAVLink v2 (#84 速度下发, #330 雷达, #331 里程计)`,
+                    mono: true
                   },
                   {
-                    key: 'video_url',
-                    label: '摄像头视频流地址',
+                    key: 'cam',
+                    label: '当前视频源',
                     value: settings.videoUrl || '未配置',
                     mono: true,
                     copyValue: settings.videoUrl
                   },
                   {
                     key: 'maps',
-                    label: '已记录地图历史',
+                    label: '已记录地图',
                     value:
                       telemetry.availableMaps.length > 0 ? (
                         <div className="flex flex-wrap gap-1">
                           {telemetry.availableMaps.map((m) => (
-                            <StatusTag
-                              key={m}
-                              size="xs"
-                              tone={m === telemetry.selectedMap ? 'primary' : 'neutral'}
-                              dot={m === telemetry.selectedMap}
-                            >
+                            <StatusTag key={m} size="xs" tone="neutral">
                               {m}
                             </StatusTag>
                           ))}
@@ -540,40 +628,6 @@ export default function App() {
                       ) : (
                         <span className="text-[var(--abc-fg-muted)]">暂无记录</span>
                       )
-                  }
-                ]}
-              />
-            </Card>
-
-            <Card size="sm" padding="md" title="当前生效的 ROS 话题与服务契约">
-              <DescriptionList
-                columns={1}
-                density="compact"
-                variant="divided"
-                items={[
-                  {
-                    key: 'cmd',
-                    label: '底盘速度 (10Hz 心跳)',
-                    value: `/cmd_vel (${topicInfo.cmdVelType || 'geometry_msgs/msg/Twist'})`,
-                    mono: true
-                  },
-                  {
-                    key: 'goal',
-                    label: '导航目标位姿',
-                    value: `${topicInfo.goalTopic || '/goal_pose'} (${topicInfo.goalType || 'geometry_msgs/msg/PoseStamped'})`,
-                    mono: true
-                  },
-                  {
-                    key: 'plan',
-                    label: '全局路径与代价图',
-                    value: `${topicInfo.pathTopic || '/plan'} · ${topicInfo.costmapTopic || '/global_costmap/costmap'}`,
-                    mono: true
-                  },
-                  {
-                    key: 'pose',
-                    label: '定位与里程计回退',
-                    value: `/amcl_pose → 自动回退 /odom · 存图服务: /map_saver/save_map`,
-                    mono: true
                   }
                 ]}
               />
@@ -605,11 +659,10 @@ export default function App() {
       );
     }
 
-    // Default View 1 (/cockpit): Classic 3-column Panoramic Robot Cockpit + Mobile Dock
+    // Default View 1 (/cockpit): 3-column Panoramic Robot Cockpit + Mobile Dock
     return (
       <>
         <div className="bot-cockpit-shell">
-          {/* Left Column: Camera + Joystick */}
           <section
             className={`bot-col-left ${activeMobileTab !== 'joystick' ? 'bot-mobile-hidden' : ''}`}
           >
@@ -626,14 +679,12 @@ export default function App() {
             />
           </section>
 
-          {/* Center Column: SLAM Map Viewer */}
           <section
             className={`bot-col-center ${activeMobileTab !== 'map' ? 'bot-mobile-hidden' : ''}`}
           >
             {renderMapViewer()}
           </section>
 
-          {/* Right Column: Mapping, Navigation & Layer Controls */}
           <section
             className={`bot-col-right ${activeMobileTab !== 'settings' ? 'bot-mobile-hidden' : ''}`}
           >
@@ -641,7 +692,6 @@ export default function App() {
           </section>
         </div>
 
-        {/* Mobile Bottom Segmented Switcher (visible <= 860px) */}
         <div className="bot-mobile-dock">
           <SegmentedControl
             block
@@ -649,11 +699,11 @@ export default function App() {
             value={activeMobileTab}
             onChange={(val) => setActiveMobileTab(val)}
             options={[
-              { value: 'map', label: '地图导航', icon: <Map className="h-3.5 w-3.5" /> },
+              { value: 'map', label: '雷达地图', icon: <Map className="h-3.5 w-3.5" /> },
               { value: 'joystick', label: '遥控监控', icon: <Gamepad2 className="h-3.5 w-3.5" /> },
               {
                 value: 'settings',
-                label: '中控设置',
+                label: '机载中控',
                 icon: <SlidersHorizontal className="h-3.5 w-3.5" />
               }
             ]}
@@ -667,7 +717,7 @@ export default function App() {
     <ProLayout
       brand={{
         name: '机器人中控台',
-        subtitle: 'ROS Web Cockpit',
+        subtitle: 'W152D Direct Cockpit',
         logo: (
           <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--abc-primary)] text-[var(--abc-primary-fg)] shadow-2xs">
             <Bot className="h-4 w-4" />
@@ -692,11 +742,15 @@ export default function App() {
         routeProgress: true
       }}
       searchPlaceholder="指令与视图 (⌘K)..."
-      commandPlaceholder="输入视图名称、拼音或机器人指令（如：急停、重连、初始位置、导出地图、RTSP）..."
+      commandPlaceholder="输入视图名称或指令（如：急停、串口直连、ROS2、导出地图、RTSP）..."
       commandActions={commandActions}
       headerExtra={
         <Header
           status={telemetry.status}
+          connectionMode={settings.connectionMode}
+          gatewayOnline={telemetry.gatewayOnline}
+          driverMode={telemetry.driverMode}
+          gatewayUrl={settings.gatewayUrl}
           rosUrl={settings.rosUrl}
           videoUrl={settings.videoUrl}
           rosProtocol={settings.rosProtocol}
@@ -710,7 +764,6 @@ export default function App() {
     >
       {renderWorkspace()}
 
-      {/* Keep RTSP Drawer available even when viewing /map or /diagnostics */}
       {pathname !== '/cockpit' && pathname !== '/teleop' && rtspDrawerOpen && (
         <div className="hidden">
           <CameraFeed

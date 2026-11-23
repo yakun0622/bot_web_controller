@@ -48,7 +48,7 @@ const PROTOCOL_PROFILES = {
 };
 
 const SAVED_MAPS_STORAGE_KEY = 'bot-saved-maps';
-const RECONNECT_DELAYS_MS = [3000, 5000, 8000, 12000];
+const RECONNECT_DELAYS_MS = [2500, 4500, 8000, 12000];
 
 function loadPersistedMaps() {
   try {
@@ -62,9 +62,7 @@ function loadPersistedMaps() {
 function persistMaps(maps) {
   try {
     localStorage.setItem(SAVED_MAPS_STORAGE_KEY, JSON.stringify(maps));
-  } catch {
-    // ignore storage errors
-  }
+  } catch {}
 }
 
 function quaternionToYaw(q = { x: 0, y: 0, z: 0, w: 1 }) {
@@ -94,9 +92,44 @@ function computePathLength(points = [], robotPose = null) {
   return total;
 }
 
+async function probeGatewayBase(preferredBase = '') {
+  const clean = (preferredBase || '').trim().replace(/\/$/, '');
+  const candidates = [];
+  if (clean) {
+    candidates.push(clean);
+  } else {
+    candidates.push('');
+    if (typeof window !== 'undefined' && window.location?.hostname) {
+      candidates.push(`${window.location.protocol}//${window.location.hostname}:8081`);
+    }
+  }
+
+  for (const base of [...new Set(candidates)]) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2200);
+    try {
+      const res = await fetch(`${base}/api/bot/health`, {
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      const json = await res.json().catch(() => null);
+      if (json?.ok && json?.gateway === 'w152d-direct') {
+        return { ok: true, base, health: json };
+      }
+    } catch {
+      // try next candidate
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { ok: false, base: clean, health: null };
+}
+
 class ROSService {
   constructor() {
     this.ros = null;
+    this.eventSource = null;
+    this.gatewayBase = '';
     this.activeTopics = [];
     this.cmdVelTopic = null;
     this.goalTopic = null;
@@ -109,7 +142,8 @@ class ROSService {
     this.logSeq = 0;
     this.lastAmclStampMs = 0;
 
-    this.currentUrl = 'ws://192.168.2.88:9090';
+    this.connectionMode = 'w152d'; // 'w152d' | 'rosbridge'
+    this.currentUrl = '';
     this.shouldReconnect = false;
     this.reconnectAttempts = 0;
     this.reconnectTimer = null;
@@ -118,14 +152,26 @@ class ROSService {
     const savedMaps = loadPersistedMaps();
 
     this.telemetry = {
-      rosProtocol: 'auto', // 'auto' | 'ros2' | 'ros1'
-      detectedProtocol: 'ros2', // 'ros2' | 'ros1'
+      connectionMode: 'w152d', // 'w152d' | 'rosbridge'
+      gatewayOnline: false,
+      gatewayBase: '',
+      driverMode: 'mavlink_serial', // 'mavlink_serial' | 'local_ros2'
+      serialConnected: false,
+      ros2Connected: false,
+      serialPort: '/dev/ttyUSB0',
+      serialBaud: 921600,
+      serialDeviceExists: false,
+      rosAvailable: false,
+      managedNodes: {},
+
+      rosProtocol: 'auto',
+      detectedProtocol: 'ros2',
       activeTopicSummary: PROTOCOL_PROFILES.ros2,
       reconnectAttempts: 0,
       linearVel: { x: 0, y: 0, z: 0 },
       angularVel: { x: 0, y: 0, z: 0 },
       robotPose: { x: 0, y: 0, theta: 0 },
-      poseSource: 'none', // 'amcl' | 'odom' | 'none'
+      poseSource: 'none',
       mapData: null,
       costmapData: null,
       scanData: [],
@@ -145,7 +191,7 @@ class ROSService {
       logs: []
     };
 
-    this.addLog('info', '机器人中控服务已初始化 (纯真机通信模式，支持断线自动重连)');
+    this.addLog('info', '中控服务已就绪 (默认启用 W152D 上位机直连模式，免 agent / 免 9090 端口)');
   }
 
   addLog(level, message, detail) {
@@ -189,13 +235,15 @@ class ROSService {
     }
   }
 
-  cleanupRosTopics() {
+  cleanupConnections() {
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
     this.activeTopics.forEach((t) => {
       try {
         t.unsubscribe();
-      } catch {
-        // ignore unsubscribe errors on closed sockets
-      }
+      } catch {}
     });
     this.activeTopics = [];
     this.cmdVelTopic = null;
@@ -203,6 +251,408 @@ class ROSService {
     this.cancelGoalTopic = null;
     this.initialPoseTopic = null;
     this.mappingCmdTopic = null;
+    if (this.ros) {
+      const prev = this.ros;
+      this.ros = null;
+      try {
+        prev.close();
+      } catch {}
+    }
+  }
+
+  // ==================== W152D Direct Gateway Mode (/api/bot) ====================
+  syncW152DHardwareStatus(meta = {}) {
+    if (meta.driverMode) this.telemetry.driverMode = meta.driverMode;
+    if (typeof meta.serialConnected === 'boolean') {
+      this.telemetry.serialConnected = meta.serialConnected;
+    }
+    if (typeof meta.ros2Connected === 'boolean') {
+      this.telemetry.ros2Connected = meta.ros2Connected;
+    }
+    if (meta.serialPort) this.telemetry.serialPort = meta.serialPort;
+    if (meta.serialBaud) this.telemetry.serialBaud = meta.serialBaud;
+    if (typeof meta.serialDeviceExists === 'boolean') {
+      this.telemetry.serialDeviceExists = meta.serialDeviceExists;
+    }
+    if (typeof meta.rosAvailable === 'boolean') {
+      this.telemetry.rosAvailable = meta.rosAvailable;
+    }
+    if (meta.managedNodes) {
+      this.telemetry.managedNodes = meta.managedNodes;
+      this.telemetry.mappingRunning = Boolean(meta.managedNodes.slam?.running);
+      if (meta.managedNodes.nav2?.running) {
+        this.telemetry.navigationRunning = true;
+      }
+    }
+
+    const hwReady =
+      this.telemetry.driverMode === 'mavlink_serial'
+        ? this.telemetry.serialConnected
+        : this.telemetry.ros2Connected;
+
+    this.status = hwReady ? 'connected' : 'connecting';
+  }
+
+  async connectW152DGateway(gatewayUrl = '', { silentAttempt = false } = {}) {
+    if (typeof EventSource === 'undefined') {
+      this.status = 'disconnected';
+      this.telemetry.gatewayOnline = false;
+      this.scheduleAutoReconnect();
+      this.notify();
+      return;
+    }
+
+    this.status = 'connecting';
+    if (!silentAttempt) {
+      this.addLog('info', `正在连接 W152D 上位机直连网关 (${gatewayUrl || '同源 /api/bot'})`);
+    }
+    this.notify();
+
+    const probe = await probeGatewayBase(gatewayUrl);
+    if (!this.shouldReconnect || this.connectionMode !== 'w152d') return;
+
+    if (!probe.ok) {
+      this.status = 'disconnected';
+      this.telemetry.gatewayOnline = false;
+      this.scheduleAutoReconnect();
+      this.notify();
+      return;
+    }
+
+    this.gatewayBase = probe.base;
+    this.telemetry.gatewayBase = probe.base;
+    this.telemetry.gatewayOnline = true;
+    this.reconnectAttempts = 0;
+    this.telemetry.reconnectAttempts = 0;
+    this.syncW152DHardwareStatus(probe.health);
+
+    const es = new EventSource(`${probe.base}/api/bot/events`);
+    this.eventSource = es;
+
+    es.addEventListener('snapshot', (ev) => {
+      try {
+        const snap = JSON.parse(ev.data);
+        this.telemetry.gatewayOnline = true;
+        this.syncW152DHardwareStatus(snap);
+        if (snap.robotPose) this.telemetry.robotPose = snap.robotPose;
+        if (snap.poseSource) this.telemetry.poseSource = snap.poseSource;
+        if (snap.scanData) this.telemetry.scanData = snap.scanData;
+        if (snap.pathData) this.telemetry.pathData = snap.pathData;
+        if (snap.mapData) this.telemetry.mapData = snap.mapData;
+        if (snap.costmapData) this.telemetry.costmapData = snap.costmapData;
+        if (snap.battery) this.telemetry.battery = snap.battery;
+        this.addLog(
+          'info',
+          `已接入 W152D 直连网关 (当前引擎: ${
+            this.telemetry.driverMode === 'mavlink_serial'
+              ? `USB 串口 ${this.telemetry.serialPort} @ ${this.telemetry.serialBaud}`
+              : '本机 ROS 2 直通'
+          })`
+        );
+        this.notify();
+      } catch {}
+    });
+
+    es.addEventListener('status', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        this.syncW152DHardwareStatus(data);
+        this.notify();
+      } catch {}
+    });
+
+    es.addEventListener('pose', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.pose) this.telemetry.robotPose = data.pose;
+        if (data.source) this.telemetry.poseSource = data.source;
+        if (Array.isArray(data.trail) && this.telemetry.driverMode === 'mavlink_serial') {
+          this.telemetry.pathData = data.trail;
+        }
+        this.updateNavigationProgress();
+        this.notify();
+      } catch {}
+    });
+
+    es.addEventListener('scan', (ev) => {
+      try {
+        this.telemetry.scanData = JSON.parse(ev.data);
+        this.notify();
+      } catch {}
+    });
+
+    es.addEventListener('map', (ev) => {
+      try {
+        this.telemetry.mapData = JSON.parse(ev.data);
+        this.notify();
+      } catch {}
+    });
+
+    es.addEventListener('costmap', (ev) => {
+      try {
+        this.telemetry.costmapData = JSON.parse(ev.data);
+        this.notify();
+      } catch {}
+    });
+
+    es.addEventListener('path', (ev) => {
+      try {
+        const pts = JSON.parse(ev.data);
+        this.telemetry.pathData = pts;
+        const arcDist = computePathLength(pts, this.telemetry.robotPose);
+        if (arcDist > 0) {
+          this.telemetry.remainingDistance = arcDist;
+          this.telemetry.estimatedTime = arcDist / 0.3;
+        }
+        this.notify();
+      } catch {}
+    });
+
+    es.addEventListener('battery', (ev) => {
+      try {
+        this.telemetry.battery = JSON.parse(ev.data);
+        this.notify();
+      } catch {}
+    });
+
+    es.addEventListener('log', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        this.addLog(data.level || 'info', data.message || '');
+        this.notify();
+      } catch {}
+    });
+
+    es.onerror = () => {
+      if (this.eventSource !== es) return;
+      es.close();
+      this.eventSource = null;
+      this.telemetry.gatewayOnline = false;
+      this.status = 'disconnected';
+      this.addLog('warn', 'W152D 网关事件流连接中断，正在自动重连...');
+      this.scheduleAutoReconnect();
+      this.notify();
+    };
+  }
+
+  async postGatewayCmd(payload) {
+    if (this.connectionMode !== 'w152d' || !this.telemetry.gatewayOnline) {
+      return { ok: false, error: 'gateway_offline' };
+    }
+    try {
+      const res = await fetch(`${this.gatewayBase}/api/bot/cmd`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      return await res.json();
+    } catch (err) {
+      return { ok: false, error: err?.message || 'network_error' };
+    }
+  }
+
+  async setW152DDriverMode(driverMode) {
+    const res = await this.postGatewayCmd({ action: 'set_driver', driverMode });
+    if (res?.ok) {
+      this.addLog(
+        'info',
+        driverMode === 'mavlink_serial'
+          ? `已切换至 W152D 原生 USB 串口直连模式 (${this.telemetry.serialPort})`
+          : '已切换至 W152D 本机 ROS 2 直通模式 (已释放串口锁)'
+      );
+      this.notify();
+    }
+    return res;
+  }
+
+  async updateW152DSerialConfig(port, baudrate) {
+    const res = await this.postGatewayCmd({ action: 'serial_config', port, baudrate });
+    if (res?.ok) {
+      this.addLog('info', `已更新 W152D 串口参数: ${res.serialPort} @ ${res.serialBaud}`);
+      this.notify();
+    }
+    return res;
+  }
+
+  async controlW152DNode(nodeId, op = 'start') {
+    const res = await this.postGatewayCmd({ action: 'node_action', nodeId, op });
+    if (res?.ok) {
+      this.addLog('info', `机载节点 [${nodeId}] 执行 ${op === 'stop' ? '停止' : '启动'} 成功`);
+    } else if (res?.error) {
+      this.addLog('error', `机载节点 [${nodeId}] 操作失败: ${res.error}`);
+    }
+    this.notify();
+    return res;
+  }
+
+  async clearOdomTrail() {
+    this.telemetry.pathData = [];
+    if (this.connectionMode === 'w152d') {
+      await this.postGatewayCmd({ action: 'clear_trail' });
+    }
+    this.notify();
+  }
+
+  getW152DCameraStreamUrl() {
+    return `${this.gatewayBase}/api/bot/camera.mjpeg`;
+  }
+
+  // ==================== Connection Entry & Auto-Reconnect ====================
+  connect(
+    url = '',
+    {
+      connectionMode = 'w152d',
+      timeoutMs = 5000,
+      rosProtocol,
+      autoReconnect = true,
+      silentAttempt = false
+    } = {}
+  ) {
+    this.connectionMode = connectionMode === 'rosbridge' ? 'rosbridge' : 'w152d';
+    this.telemetry.connectionMode = this.connectionMode;
+    this.currentUrl = url;
+    this.shouldReconnect = autoReconnect;
+    if (rosProtocol) {
+      this.telemetry.rosProtocol = rosProtocol;
+    }
+
+    this.clearTimers();
+    this.cleanupConnections();
+    this.lastAmclStampMs = 0;
+
+    if (this.connectionMode === 'w152d') {
+      this.connectW152DGateway(url, { silentAttempt });
+      return;
+    }
+
+    // Fallback Legacy Mode: External Rosbridge WebSocket (ws://...:9090)
+    const wsUrl = url || 'ws://192.168.2.88:9090';
+    this.status = 'connecting';
+    this.telemetry.gatewayOnline = false;
+    if (!silentAttempt) {
+      this.addLog('info', `正在连接外部 Rosbridge: ${wsUrl}`, {
+        protocol: this.telemetry.rosProtocol
+      });
+    }
+    this.notify();
+
+    try {
+      const ros = new ROSLIB.Ros({ url: wsUrl });
+      this.ros = ros;
+
+      const handleFailure = () => {
+        if (this.ros !== ros) return;
+        this.clearTimers();
+        this.cleanupConnections();
+        this.status = 'disconnected';
+        this.telemetry.poseSource = 'none';
+        this.scheduleAutoReconnect();
+        this.notify();
+      };
+
+      this.connectionTimer = setTimeout(handleFailure, timeoutMs);
+
+      ros.on('connection', () => {
+        if (this.ros !== ros) return;
+        this.clearTimers();
+        this.reconnectAttempts = 0;
+        this.telemetry.reconnectAttempts = 0;
+        this.status = 'connected';
+
+        const pref = this.telemetry.rosProtocol || 'auto';
+        if (pref !== 'auto') {
+          const { protocol, profile } = this.resolveProfileFromGraph(pref);
+          this.bindRosTopics(ros, protocol, profile);
+          this.addLog('info', `已连接 Rosbridge (${profile.label})`);
+          this.notify();
+          return;
+        }
+
+        let resolved = false;
+        const timer = setTimeout(() => {
+          if (resolved || this.ros !== ros) return;
+          resolved = true;
+          const { protocol, profile } = this.resolveProfileFromGraph('ros2');
+          this.bindRosTopics(ros, protocol, profile);
+          this.notify();
+        }, 1200);
+
+        ros.getTopics(
+          (result) => {
+            if (resolved || this.ros !== ros) return;
+            resolved = true;
+            clearTimeout(timer);
+            const { protocol, profile } = this.resolveProfileFromGraph(
+              'auto',
+              result?.topics || [],
+              result?.types || []
+            );
+            this.bindRosTopics(ros, protocol, profile);
+            this.addLog('info', `已连接 Rosbridge，自动匹配 ${profile.label}`);
+            this.notify();
+          },
+          () => {
+            if (resolved || this.ros !== ros) return;
+            resolved = true;
+            clearTimeout(timer);
+            const { protocol, profile } = this.resolveProfileFromGraph('ros2');
+            this.bindRosTopics(ros, protocol, profile);
+            this.notify();
+          }
+        );
+      });
+
+      ros.on('error', handleFailure);
+      ros.on('close', handleFailure);
+    } catch (e) {
+      this.status = 'disconnected';
+      this.addLog('error', `Rosbridge 连接异常: ${e?.message || '未知错误'}`);
+      this.scheduleAutoReconnect();
+      this.notify();
+    }
+  }
+
+  scheduleAutoReconnect() {
+    if (!this.shouldReconnect || this.reconnectTimer) return;
+    const delayMs =
+      RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
+    this.reconnectAttempts += 1;
+    this.telemetry.reconnectAttempts = this.reconnectAttempts;
+
+    if (this.reconnectAttempts <= 3) {
+      this.addLog('warn', `通信未就绪，将在 ${delayMs / 1000}s 后自动重试 (第 ${this.reconnectAttempts} 次)`);
+    }
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.shouldReconnect && this.status === 'disconnected') {
+        this.connect(this.currentUrl, {
+          connectionMode: this.connectionMode,
+          rosProtocol: this.telemetry.rosProtocol,
+          autoReconnect: true,
+          silentAttempt: this.reconnectAttempts > 2
+        });
+      }
+    }, delayMs);
+  }
+
+  reconnect() {
+    this.reconnectAttempts = 0;
+    this.telemetry.reconnectAttempts = 0;
+    this.connect(this.currentUrl, {
+      connectionMode: this.connectionMode,
+      rosProtocol: this.telemetry.rosProtocol,
+      autoReconnect: true
+    });
+  }
+
+  disconnect() {
+    this.shouldReconnect = false;
+    this.clearTimers();
+    this.cleanupConnections();
+    this.telemetry.gatewayOnline = false;
+    this.status = 'disconnected';
+    this.notify();
   }
 
   resolveProfileFromGraph(preference, topics = [], types = []) {
@@ -236,110 +686,69 @@ class ROSService {
   }
 
   bindRosTopics(ros, protocol, profile) {
-    this.cleanupRosTopics();
     this.telemetry.detectedProtocol = protocol;
     this.telemetry.activeTopicSummary = profile;
 
-    this.cmdVelTopic = new ROSLIB.Topic({
-      ros,
-      name: '/cmd_vel',
-      messageType: profile.cmdVelType
-    });
-
-    this.goalTopic = new ROSLIB.Topic({
-      ros,
-      name: profile.goalTopic,
-      messageType: profile.goalType
-    });
-
+    this.cmdVelTopic = new ROSLIB.Topic({ ros, name: '/cmd_vel', messageType: profile.cmdVelType });
+    this.goalTopic = new ROSLIB.Topic({ ros, name: profile.goalTopic, messageType: profile.goalType });
     this.initialPoseTopic = new ROSLIB.Topic({
       ros,
       name: profile.initialPoseTopic,
       messageType: profile.initialPoseType
     });
-
     this.mappingCmdTopic = new ROSLIB.Topic({
       ros,
       name: '/bot_controller/mapping_cmd',
       messageType: protocol === 'ros2' ? 'std_msgs/msg/Bool' : 'std_msgs/Bool'
     });
 
-    if (protocol === 'ros1') {
-      this.cancelGoalTopic = new ROSLIB.Topic({
-        ros,
-        name: profile.cancelGoalTopic,
-        messageType: 'actionlib_msgs/GoalID'
-      });
-    }
-
     const trackSub = (name, messageType, handler) => {
       const topic = new ROSLIB.Topic({ ros, name, messageType });
       topic.subscribe(handler);
       this.activeTopics.push(topic);
-      return topic;
     };
 
-    // 1. OccupancyGrid Map
-    trackSub(profile.mapTopic, profile.mapType, (message) => {
-      this.telemetry.mapData = message;
+    trackSub(profile.mapTopic, profile.mapType, (m) => {
+      this.telemetry.mapData = m;
       this.notify();
     });
-
-    // 2. Global Costmap
-    trackSub(profile.costmapTopic, profile.mapType, (message) => {
-      this.telemetry.costmapData = message;
+    trackSub(profile.costmapTopic, profile.mapType, (m) => {
+      this.telemetry.costmapData = m;
       this.notify();
     });
-
-    // 3. LaserScan
     trackSub(profile.scanTopic, profile.scanType, (scan) => {
-      const scanPoints = [];
+      const pts = [];
       let angle = scan.angle_min;
       const { x: rx, y: ry, theta: rTheta } = this.telemetry.robotPose;
       for (let i = 0; i < scan.ranges.length; i++) {
         const r = scan.ranges[i];
         if (Number.isFinite(r) && r >= scan.range_min && r <= scan.range_max) {
-          scanPoints.push({
-            x: rx + r * Math.cos(rTheta + angle),
-            y: ry + r * Math.sin(rTheta + angle),
-            dist: r
-          });
+          pts.push({ x: rx + r * Math.cos(rTheta + angle), y: ry + r * Math.sin(rTheta + angle), dist: r });
         }
         angle += scan.angle_increment;
       }
-      this.telemetry.scanData = scanPoints;
+      this.telemetry.scanData = pts;
       this.notify();
     });
-
-    // 4. AMCL Pose
     trackSub(profile.poseTopic, profile.poseType, (msg) => {
       const p = msg.pose.pose.position;
-      const yaw = quaternionToYaw(msg.pose.pose.orientation);
       this.lastAmclStampMs = Date.now();
       this.telemetry.poseSource = 'amcl';
       this.telemetry.navigationRunning = true;
-      this.telemetry.robotPose = { x: p.x, y: p.y, theta: yaw };
+      this.telemetry.robotPose = { x: p.x, y: p.y, theta: quaternionToYaw(msg.pose.pose.orientation) };
       this.updateNavigationProgress();
       this.notify();
     });
-
-    // 5. Odometry Pose fallback (used during SLAM mapping when AMCL is inactive)
     trackSub(profile.odomTopic, profile.odomType, (msg) => {
       if (Date.now() - this.lastAmclStampMs < 3000) return;
       const p = msg.pose.pose.position;
-      const yaw = quaternionToYaw(msg.pose.pose.orientation);
       this.telemetry.poseSource = 'odom';
-      this.telemetry.robotPose = { x: p.x, y: p.y, theta: yaw };
+      this.telemetry.robotPose = { x: p.x, y: p.y, theta: quaternionToYaw(msg.pose.pose.orientation) };
       this.updateNavigationProgress();
       this.notify();
     });
-
-    // 6. Global Planned Path
     trackSub(profile.pathTopic, profile.pathType, (msg) => {
-      const pts = (msg.poses || []).map((p) => ({
-        x: p.pose.position.x,
-        y: p.pose.position.y
-      }));
+      const pts = (msg.poses || []).map((p) => ({ x: p.pose.position.x, y: p.pose.position.y }));
       this.telemetry.pathData = pts;
       const arcDist = computePathLength(pts, this.telemetry.robotPose);
       if (arcDist > 0) {
@@ -348,8 +757,6 @@ class ROSService {
       }
       this.notify();
     });
-
-    // 7. Battery State
     trackSub(profile.batteryTopic, profile.batteryType, (msg) => {
       let pct = msg.percentage;
       if (pct <= 1.0) pct = Math.round(pct * 100);
@@ -379,301 +786,95 @@ class ROSService {
     }
   }
 
-  scheduleAutoReconnect() {
-    if (!this.shouldReconnect || this.reconnectTimer) return;
-    const delayMs =
-      RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
-    this.reconnectAttempts += 1;
-    this.telemetry.reconnectAttempts = this.reconnectAttempts;
-
-    if (this.reconnectAttempts <= 3) {
-      this.addLog('warn', `ROS Bridge 未连接，将在 ${delayMs / 1000}s 后自动重试 (第 ${this.reconnectAttempts} 次)`);
-    }
-
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (this.shouldReconnect && this.status === 'disconnected') {
-        this.connect(this.currentUrl, {
-          rosProtocol: this.telemetry.rosProtocol,
-          autoReconnect: true,
-          silentAttempt: this.reconnectAttempts > 2
-        });
-      }
-    }, delayMs);
-  }
-
-  reconnect() {
-    this.reconnectAttempts = 0;
-    this.telemetry.reconnectAttempts = 0;
-    this.connect(this.currentUrl, {
-      rosProtocol: this.telemetry.rosProtocol,
-      autoReconnect: true
-    });
-  }
-
-  connect(
-    url = 'ws://192.168.2.88:9090',
-    { timeoutMs = 5000, rosProtocol, autoReconnect = true, silentAttempt = false } = {}
-  ) {
-    this.currentUrl = url;
-    this.shouldReconnect = autoReconnect;
-    if (rosProtocol) {
-      this.telemetry.rosProtocol = rosProtocol;
-    }
-
-    this.clearTimers();
-    this.cleanupRosTopics();
-    this.lastAmclStampMs = 0;
-
-    if (this.ros) {
-      const previousRos = this.ros;
-      this.ros = null;
-      previousRos.close();
-    }
-
-    this.status = 'connecting';
-    if (!silentAttempt) {
-      this.addLog('info', `正在连接 ROS Bridge: ${url}`, {
-        protocol: this.telemetry.rosProtocol
-      });
-    }
-    this.notify();
-
-    try {
-      const ros = new ROSLIB.Ros({ url });
-      this.ros = ros;
-
-      const handleConnectionFailure = () => {
-        if (this.ros !== ros) return;
-
-        if (this.connectionTimer) {
-          clearTimeout(this.connectionTimer);
-          this.connectionTimer = null;
-        }
-        this.cleanupRosTopics();
-        this.ros = null;
-        try {
-          ros.close();
-        } catch {
-          // ignore close errors
-        }
-
-        const wasConnected = this.status === 'connected';
-        this.status = 'disconnected';
-        this.telemetry.linearVel = { x: 0, y: 0, z: 0 };
-        this.telemetry.angularVel = { x: 0, y: 0, z: 0 };
-        this.telemetry.poseSource = 'none';
-
-        if (wasConnected) {
-          this.reconnectAttempts = 0;
-          this.addLog('error', `与 ROS Bridge 的连接已断开 (${url})`);
-        }
-
-        this.scheduleAutoReconnect();
-        this.notify();
-      };
-
-      this.connectionTimer = setTimeout(() => {
-        handleConnectionFailure();
-      }, timeoutMs);
-
-      ros.on('connection', () => {
-        if (this.ros !== ros) return;
-        this.clearTimers();
-        this.reconnectAttempts = 0;
-        this.telemetry.reconnectAttempts = 0;
-        this.status = 'connected';
-
-        const pref = this.telemetry.rosProtocol || 'auto';
-        if (pref !== 'auto') {
-          const { protocol, profile } = this.resolveProfileFromGraph(pref);
-          this.bindRosTopics(ros, protocol, profile);
-          this.addLog('info', `已连接 ROS Bridge，协议栈锁定为 ${profile.label}`);
-          this.refreshAvailableMaps();
-          this.notify();
-          return;
-        }
-
-        let graphResolved = false;
-        const fallbackTimer = setTimeout(() => {
-          if (graphResolved || this.ros !== ros) return;
-          graphResolved = true;
-          const { protocol, profile } = this.resolveProfileFromGraph('ros2');
-          this.bindRosTopics(ros, protocol, profile);
-          this.addLog('info', `已连接 ROS Bridge，默认启用 ${profile.label} 话题契约`);
-          this.refreshAvailableMaps();
-          this.notify();
-        }, 1200);
-
-        ros.getTopics(
-          (result) => {
-            if (graphResolved || this.ros !== ros) return;
-            graphResolved = true;
-            clearTimeout(fallbackTimer);
-            const topics = result?.topics || [];
-            const types = result?.types || [];
-            const { protocol, profile } = this.resolveProfileFromGraph('auto', topics, types);
-            this.bindRosTopics(ros, protocol, profile);
-            this.addLog('info', `已连接 ROS Bridge，自动识别协议栈为 ${profile.label}`, {
-              goalTopic: profile.goalTopic,
-              pathTopic: profile.pathTopic,
-              discoveredTopics: topics.length
-            });
-            this.refreshAvailableMaps();
-            this.notify();
-          },
-          () => {
-            if (graphResolved || this.ros !== ros) return;
-            graphResolved = true;
-            clearTimeout(fallbackTimer);
-            const { protocol, profile } = this.resolveProfileFromGraph('ros2');
-            this.bindRosTopics(ros, protocol, profile);
-            this.addLog('info', `已连接 ROS Bridge (${profile.label})`);
-            this.refreshAvailableMaps();
-            this.notify();
-          }
-        );
-      });
-
-      ros.on('error', handleConnectionFailure);
-      ros.on('close', handleConnectionFailure);
-    } catch (e) {
-      this.status = 'disconnected';
-      this.addLog('error', `ROS WebSocket 地址或连接异常: ${e?.message || '未知错误'}`);
-      this.scheduleAutoReconnect();
-      this.notify();
-    }
-  }
-
-  disconnect() {
-    this.shouldReconnect = false;
-    this.clearTimers();
-    this.cleanupRosTopics();
-    if (this.ros) {
-      const ros = this.ros;
-      this.ros = null;
-      ros.close();
-    }
-    this.status = 'disconnected';
-    this.notify();
-  }
-
-  callRosService(name, serviceType, requestPayload = {}) {
-    return new Promise((resolve, reject) => {
-      if (!this.ros || this.status !== 'connected') {
-        reject(new Error('ROS not connected'));
-        return;
-      }
-      const client = new ROSLIB.Service({
-        ros: this.ros,
-        name,
-        serviceType
-      });
-      const req = new ROSLIB.ServiceRequest(requestPayload);
-      const timer = setTimeout(() => reject(new Error(`Service ${name} timeout`)), 3500);
-      client.callService(
-        req,
-        (res) => {
-          clearTimeout(timer);
-          resolve(res);
-        },
-        (err) => {
-          clearTimeout(timer);
-          reject(new Error(typeof err === 'string' ? err : err?.message || `Service ${name} error`));
-        }
-      );
-    });
-  }
-
+  // ==================== Unified Control Actions ====================
   publishTwist(linear = { x: 0, y: 0, z: 0 }, angular = { x: 0, y: 0, z: 0 }) {
-    if (this.status !== 'connected' || !this.cmdVelTopic) return false;
+    if (this.status !== 'connected') return false;
     this.telemetry.linearVel = linear;
     this.telemetry.angularVel = angular;
+
+    if (this.connectionMode === 'w152d') {
+      this.postGatewayCmd({
+        action: 'cmd_vel',
+        lx: linear.x || 0,
+        ly: linear.y || 0,
+        az: angular.z || 0
+      });
+      this.notify();
+      return true;
+    }
+
+    if (!this.cmdVelTopic) return false;
     this.cmdVelTopic.publish(new ROSLIB.Message({ linear, angular }));
     this.notify();
     return true;
   }
 
-  cancelActiveRosGoal() {
-    if (this.status !== 'connected') return;
-    if (this.cancelGoalTopic) {
-      this.cancelGoalTopic.publish(new ROSLIB.Message({}));
-    } else if (this.telemetry.detectedProtocol === 'ros2') {
-      this.callRosService(
-        '/navigate_to_pose/_action/cancel_goal',
-        'action_msgs/srv/CancelGoal',
-        {}
-      ).catch(() => {});
-    }
-  }
-
   emergencyStop() {
-    this.cancelActiveRosGoal();
     this.telemetry.targetPose = null;
-    this.telemetry.pathData = [];
     this.telemetry.activeWaypointIndex = -1;
     this.telemetry.remainingDistance = 0;
     this.telemetry.estimatedTime = 0;
     this.telemetry.linearVel = { x: 0, y: 0, z: 0 };
     this.telemetry.angularVel = { x: 0, y: 0, z: 0 };
 
+    if (this.connectionMode === 'w152d' && this.telemetry.gatewayOnline) {
+      this.postGatewayCmd({ action: 'estop' });
+      this.addLog('warn', '已通过 W152D 直连链路下发紧急制动 (vx=0, wz=0)');
+      this.notify();
+      return;
+    }
+
     if (this.status === 'connected' && this.cmdVelTopic) {
       this.cmdVelTopic.publish(
-        new ROSLIB.Message({
-          linear: { x: 0, y: 0, z: 0 },
-          angular: { x: 0, y: 0, z: 0 }
-        })
+        new ROSLIB.Message({ linear: { x: 0, y: 0, z: 0 }, angular: { x: 0, y: 0, z: 0 } })
       );
-      this.addLog('warn', '已向机器人下发紧急制动指令 (/cmd_vel = 0，取消活动目标)');
-    } else {
-      this.addLog('warn', '当前未连接 ROS Bridge，已清空本地目标队列');
+      this.addLog('warn', '已下发紧急制动指令 (/cmd_vel = 0)');
     }
     this.notify();
   }
 
-  buildROSHeader(frameId = 'map') {
-    const nowMs = Date.now();
-    const sec = Math.floor(nowMs / 1000);
-    const nanosec = (nowMs % 1000) * 1e6;
-    if (this.telemetry.detectedProtocol === 'ros2') {
-      return {
-        frame_id: frameId,
-        stamp: { sec, nanosec }
-      };
-    }
-    return {
-      frame_id: frameId,
-      stamp: { secs: sec, nsecs: nanosec }
-    };
-  }
-
   dispatchSingleGoal(x, y, theta = 0) {
-    if (this.status !== 'connected' || !this.goalTopic) return false;
+    if (this.status !== 'connected') return false;
 
+    if (this.connectionMode === 'w152d') {
+      if (this.telemetry.driverMode !== 'local_ros2') {
+        this.addLog('warn', '当前处于纯串口直连模式，请先在右侧切换至「ROS 2 导航直通」并启动 Nav2');
+        this.notify();
+        return false;
+      }
+      this.telemetry.targetPose = { x, y, theta };
+      this.telemetry.navigationRunning = true;
+      this.telemetry.pathData = [];
+      this.postGatewayCmd({ action: 'goal_pose', x, y, theta });
+      return true;
+    }
+
+    if (!this.goalTopic) return false;
     this.telemetry.targetPose = { x, y, theta };
     this.telemetry.navigationRunning = true;
     this.telemetry.pathData = [];
 
-    const rx = this.telemetry.robotPose.x;
-    const ry = this.telemetry.robotPose.y;
-    const dist = Math.hypot(x - rx, y - ry);
-    this.telemetry.remainingDistance = dist;
-    this.telemetry.estimatedTime = dist / 0.3;
+    const nowMs = Date.now();
+    const sec = Math.floor(nowMs / 1000);
+    const nanosec = (nowMs % 1000) * 1e6;
+    const header =
+      this.telemetry.detectedProtocol === 'ros2'
+        ? { frame_id: 'map', stamp: { sec, nanosec } }
+        : { frame_id: 'map', stamp: { secs: sec, nsecs: nanosec } };
 
-    const poseMsg = new ROSLIB.Message({
-      header: this.buildROSHeader('map'),
-      pose: {
-        position: { x, y, z: 0 },
-        orientation: yawToQuaternion(theta)
-      }
-    });
-    this.goalTopic.publish(poseMsg);
+    this.goalTopic.publish(
+      new ROSLIB.Message({
+        header,
+        pose: { position: { x, y, z: 0 }, orientation: yawToQuaternion(theta) }
+      })
+    );
     return true;
   }
 
   setGoalPose(x, y, theta = 0) {
-    if (this.status !== 'connected') {
-      this.addLog('warn', '下发导航目标失败：尚未连接 ROS Bridge');
+    if (this.status !== 'connected') return false;
+    if (this.connectionMode === 'w152d' && this.telemetry.driverMode !== 'local_ros2') {
+      this.addLog('warn', '串口直连模式仅支持摇杆遥控与雷达观测，定点导航请切换至 ROS 2 模式');
       this.notify();
       return false;
     }
@@ -684,19 +885,58 @@ class ROSService {
     }
 
     const deg = ((theta * 180) / Math.PI).toFixed(0);
-    this.addLog('info', `下发单点导航目标 (${x.toFixed(2)}, ${y.toFixed(2)}, ${deg}°)`);
-    this.dispatchSingleGoal(x, y, theta);
+    this.addLog('info', `下发导航目标 (${x.toFixed(2)}, ${y.toFixed(2)}, ${deg}°)`);
+    const ok = this.dispatchSingleGoal(x, y, theta);
+    this.notify();
+    return ok;
+  }
+
+  setInitialPose(x, y, theta = 0) {
+    if (this.status !== 'connected') return false;
+    if (this.connectionMode === 'w152d') {
+      if (this.telemetry.driverMode !== 'local_ros2') {
+        this.addLog('warn', '请先切换至「ROS 2 导航直通」后再标定 AMCL 初始位姿');
+        this.notify();
+        return false;
+      }
+      this.telemetry.robotPose = { x, y, theta };
+      this.postGatewayCmd({ action: 'initial_pose', x, y, theta });
+      this.addLog('info', `已通过 W152D 本机发布 /initialpose (${x.toFixed(2)}, ${y.toFixed(2)})`);
+      this.notify();
+      return true;
+    }
+
+    if (!this.initialPoseTopic) return false;
+    this.telemetry.robotPose = { x, y, theta };
+    const cov = new Array(36).fill(0);
+    cov[0] = 0.25;
+    cov[7] = 0.25;
+    cov[35] = 0.0685;
+    const nowMs = Date.now();
+    const sec = Math.floor(nowMs / 1000);
+    const nanosec = (nowMs % 1000) * 1e6;
+    const header =
+      this.telemetry.detectedProtocol === 'ros2'
+        ? { frame_id: 'map', stamp: { sec, nanosec } }
+        : { frame_id: 'map', stamp: { secs: sec, nsecs: nanosec } };
+
+    this.initialPoseTopic.publish(
+      new ROSLIB.Message({
+        header,
+        pose: {
+          pose: { position: { x, y, z: 0 }, orientation: yawToQuaternion(theta) },
+          covariance: cov
+        }
+      })
+    );
     this.notify();
     return true;
   }
 
-  // ==================== Multi-Point Waypoint Patrol ====================
+  // ==================== Waypoint Patrol ====================
   setMultiPointNav(enabled) {
     this.telemetry.multiPointNav = Boolean(enabled);
-    if (!enabled) {
-      this.telemetry.activeWaypointIndex = -1;
-    }
-    this.addLog('info', enabled ? '已开启多点巡航航点编排模式' : '已切回单点目标导航模式');
+    if (!enabled) this.telemetry.activeWaypointIndex = -1;
     this.notify();
   }
 
@@ -709,13 +949,7 @@ class ROSService {
     const idx = this.telemetry.waypoints.length + 1;
     const wp = { id: `wp_${Date.now()}_${idx}`, x, y, theta };
     this.telemetry.waypoints = [...this.telemetry.waypoints, wp];
-    this.addLog('info', `添加巡航航点 #${idx} (${x.toFixed(2)}, ${y.toFixed(2)})`);
-
-    if (
-      this.status === 'connected' &&
-      this.telemetry.navigationRunning &&
-      this.telemetry.activeWaypointIndex === -1
-    ) {
+    if (this.status === 'connected' && this.telemetry.navigationRunning && this.telemetry.activeWaypointIndex === -1) {
       this.telemetry.activeWaypointIndex = this.telemetry.waypoints.length - 1;
       this.dispatchSingleGoal(wp.x, wp.y, wp.theta);
     }
@@ -727,10 +961,9 @@ class ROSService {
     this.telemetry.navigationRunning = true;
     this.telemetry.activeWaypointIndex = 0;
     const first = this.telemetry.waypoints[0];
-    this.addLog('info', `启动多点巡航（共 ${this.telemetry.waypoints.length} 个航点）`);
-    this.dispatchSingleGoal(first.x, first.y, first.theta);
+    const ok = this.dispatchSingleGoal(first.x, first.y, first.theta);
     this.notify();
-    return true;
+    return ok;
   }
 
   advanceWaypointQueue() {
@@ -741,89 +974,49 @@ class ROSService {
     if (nextIdx < waypoints.length) {
       this.telemetry.activeWaypointIndex = nextIdx;
       const wp = waypoints[nextIdx];
-      this.addLog('info', `已到达航点 #${activeWaypointIndex + 1}，前往下一航点 #${nextIdx + 1}`);
       this.dispatchSingleGoal(wp.x, wp.y, wp.theta);
       this.notify();
     } else if (loopWaypoints && waypoints.length > 1) {
       this.telemetry.activeWaypointIndex = 0;
       const wp = waypoints[0];
-      this.addLog('info', '本轮巡航完成，循环返回航点 #1');
       this.dispatchSingleGoal(wp.x, wp.y, wp.theta);
       this.notify();
     } else {
       this.telemetry.activeWaypointIndex = -1;
       this.telemetry.targetPose = null;
-      this.telemetry.pathData = [];
       this.telemetry.remainingDistance = 0;
       this.telemetry.estimatedTime = 0;
-      this.addLog('info', `多点巡航任务全部完成（共完成 ${waypoints.length} 个航点）`);
       this.notify();
     }
   }
 
   clearWaypoints() {
-    this.cancelActiveRosGoal();
     this.telemetry.waypoints = [];
     this.telemetry.activeWaypointIndex = -1;
     this.telemetry.targetPose = null;
-    this.telemetry.pathData = [];
     this.telemetry.remainingDistance = 0;
     this.telemetry.estimatedTime = 0;
-    this.addLog('info', '已清空全部巡航航点队列');
     this.notify();
   }
 
-  // ==================== Pose, Mapping & Map Server Integration ====================
-  setInitialPose(x, y, theta = 0) {
-    if (this.status !== 'connected' || !this.initialPoseTopic) {
-      this.addLog('warn', '标定初始位姿失败：尚未连接 ROS Bridge');
-      this.notify();
+  // ==================== SLAM & Map Operations ====================
+  async toggleMappingMode() {
+    if (this.connectionMode === 'w152d') {
+      if (!this.telemetry.gatewayOnline) return false;
+      const isRunning = Boolean(this.telemetry.managedNodes?.slam?.running || this.telemetry.mappingRunning);
+      const res = await this.controlW152DNode('slam', isRunning ? 'stop' : 'start');
+      if (res?.ok) {
+        this.telemetry.mappingRunning = !isRunning;
+        this.notify();
+        return true;
+      }
       return false;
     }
 
-    this.telemetry.robotPose = { x, y, theta };
-    const deg = ((theta * 180) / Math.PI).toFixed(0);
-    this.addLog('info', `发布机器人初始位姿 /initialpose (${x.toFixed(2)}, ${y.toFixed(2)}, ${deg}°)`);
-
-    const covariance = new Array(36).fill(0);
-    covariance[0] = 0.25;
-    covariance[7] = 0.25;
-    covariance[35] = 0.0685;
-
-    const poseMsg = new ROSLIB.Message({
-      header: this.buildROSHeader('map'),
-      pose: {
-        pose: {
-          position: { x, y, z: 0 },
-          orientation: yawToQuaternion(theta)
-        },
-        covariance
-      }
-    });
-    this.initialPoseTopic.publish(poseMsg);
-    this.notify();
-    return true;
-  }
-
-  async toggleMappingMode() {
     if (this.status !== 'connected') return false;
-
-    const nextRunning = !this.telemetry.mappingRunning;
-    this.telemetry.mappingRunning = nextRunning;
-
+    this.telemetry.mappingRunning = !this.telemetry.mappingRunning;
     if (this.mappingCmdTopic) {
-      this.mappingCmdTopic.publish(new ROSLIB.Message({ data: nextRunning }));
-    }
-    try {
-      await this.callRosService('/slam_toolbox/pause_new_measurements', 'slam_toolbox/srv/Pause', {});
-      this.addLog('info', nextRunning ? '已通过 slam_toolbox 恢复激光建图测量' : '已暂停 slam_toolbox 建图测量');
-    } catch {
-      this.addLog(
-        'info',
-        nextRunning
-          ? '已发布开始建图指令 (/bot_controller/mapping_cmd = true)'
-          : '已发布停止建图指令 (/bot_controller/mapping_cmd = false)'
-      );
+      this.mappingCmdTopic.publish(new ROSLIB.Message({ data: this.telemetry.mappingRunning }));
     }
     this.notify();
     return true;
@@ -841,39 +1034,19 @@ class ROSService {
   async saveMap(mapName) {
     const cleanName = (mapName || '').trim().replace(/\.(yaml|pgm)$/i, '');
     if (!cleanName) return { ok: false, mode: 'invalid' };
-    if (this.status !== 'connected') return { ok: false, mode: 'disconnected' };
 
-    try {
-      await this.callRosService('/map_saver/save_map', 'nav2_msgs/srv/SaveMap', {
-        map_topic: '/map',
-        map_url: cleanName,
-        image_format: 'pgm',
-        map_mode: 'trinary',
-        free_thresh: 0.25,
-        occupied_thresh: 0.65
-      });
-      this.registerMapName(cleanName);
-      this.addLog('info', `已通过 Nav2 map_saver 保存地图: ${cleanName}`);
-      this.notify();
-      return { ok: true, mode: 'nav2' };
-    } catch {
-      try {
-        await this.callRosService('/slam_toolbox/save_map', 'slam_toolbox/srv/SaveMap', {
-          name: { data: cleanName }
-        });
+    if (this.connectionMode === 'w152d' && this.telemetry.gatewayOnline) {
+      const res = await this.postGatewayCmd({ action: 'save_map', name: cleanName });
+      if (res?.ok) {
         this.registerMapName(cleanName);
-        this.addLog('info', `已通过 slam_toolbox 保存地图: ${cleanName}`);
+        this.addLog('info', `已请求 W152D 本机保存栅格地图: ${cleanName}`);
         this.notify();
-        return { ok: true, mode: 'slam_toolbox' };
-      } catch (err) {
-        this.addLog(
-          'error',
-          `远端存图服务调用失败 (${err?.message || '未检测到 /map_saver/save_map 或 /slam_toolbox/save_map'})，可使用右侧下载按钮直接导出本地 .pgm/.yaml`
-        );
-        this.notify();
-        return { ok: false, mode: 'service_unavailable' };
+        return { ok: true, mode: 'nav2' };
       }
+      return { ok: false, mode: 'service_unavailable' };
     }
+
+    return { ok: false, mode: 'disconnected' };
   }
 
   exportCurrentMapFiles(baseName = 'map') {
@@ -926,56 +1099,32 @@ class ROSService {
 
     triggerDownload(pgmBlob, `${clean}.pgm`);
     setTimeout(() => triggerDownload(yamlBlob, `${clean}.yaml`), 180);
-    this.addLog('info', `已导出 ROS 标准地图文件: ${clean}.pgm + ${clean}.yaml`);
+    this.addLog('info', `已导出地图文件: ${clean}.pgm + ${clean}.yaml`);
     this.notify();
     return true;
   }
 
   async refreshAvailableMaps() {
-    if (this.status === 'connected') {
-      try {
-        const res = await this.callRosService(
-          '/bot_controller/list_maps',
-          this.telemetry.detectedProtocol === 'ros2' ? 'std_srvs/srv/Trigger' : 'std_srvs/Trigger',
-          {}
-        );
-        if (res?.message) {
-          const parsed = res.message
-            .split(/[,;\s]+/)
-            .map((s) => s.trim().replace(/\.yaml$/i, ''))
-            .filter(Boolean);
-          if (parsed.length > 0) {
-            this.telemetry.availableMaps = [...new Set([...parsed, ...this.telemetry.availableMaps])];
-            if (!this.telemetry.selectedMap) {
-              this.telemetry.selectedMap = this.telemetry.availableMaps[0];
-            }
-            persistMaps(this.telemetry.availableMaps);
-          }
-        }
-      } catch {
-        // Optional helper service not present on robot; keep persisted map history
-      }
-    }
     this.notify();
     return this.telemetry.availableMaps;
   }
 
-  toggleNavigationMode() {
-    if (this.status !== 'connected') return false;
-
-    const nextRunning = !this.telemetry.navigationRunning;
-    this.telemetry.navigationRunning = nextRunning;
-
-    if (!nextRunning) {
-      this.cancelActiveRosGoal();
-      this.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
-      this.addLog('info', '自主导航已停止，已取消活动导航目标并下发零速度');
-    } else {
-      this.addLog('info', '自主导航控制已启用');
-      if (this.telemetry.multiPointNav && this.telemetry.waypoints.length > 0 && !this.telemetry.targetPose) {
-        this.startWaypointPatrol();
+  async toggleNavigationMode() {
+    if (this.connectionMode === 'w152d' && this.telemetry.gatewayOnline) {
+      const navNodeRunning = Boolean(this.telemetry.managedNodes?.nav2?.running);
+      const res = await this.controlW152DNode('nav2', navNodeRunning ? 'stop' : 'start');
+      if (res?.ok) {
+        this.telemetry.navigationRunning = !navNodeRunning;
+        this.notify();
         return true;
       }
+      return false;
+    }
+
+    if (this.status !== 'connected') return false;
+    this.telemetry.navigationRunning = !this.telemetry.navigationRunning;
+    if (!this.telemetry.navigationRunning) {
+      this.publishTwist({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
     }
     this.notify();
     return true;
@@ -983,33 +1132,20 @@ class ROSService {
 
   async setSelectedMap(mapNameOrPath) {
     const raw = (mapNameOrPath || '').trim();
-    if (!raw || this.status !== 'connected') return false;
-
+    if (!raw) return false;
     const cleanStem = raw.replace(/\.yaml$/i, '');
     const yamlUrl = raw.endsWith('.yaml') ? raw : `${raw}.yaml`;
 
-    this.telemetry.targetPose = null;
-    this.telemetry.pathData = [];
-    this.telemetry.remainingDistance = 0;
-    this.telemetry.estimatedTime = 0;
-
-    try {
-      await this.callRosService('/map_server/load_map', 'nav2_msgs/srv/LoadMap', {
-        map_url: yamlUrl
-      });
-      this.registerMapName(cleanStem);
-      this.addLog('info', `已通过 Nav2 map_server 加载地图: ${yamlUrl}`);
-      this.notify();
-      return true;
-    } catch (err) {
-      this.registerMapName(cleanStem);
-      this.addLog(
-        'warn',
-        `请求 /map_server/load_map (${yamlUrl}) 未响应: ${err?.message || '请确认 map_server 已处于 active 状态'}`
-      );
-      this.notify();
-      return false;
+    if (this.connectionMode === 'w152d' && this.telemetry.gatewayOnline) {
+      const res = await this.postGatewayCmd({ action: 'load_map', map_url: yamlUrl });
+      if (res?.ok) {
+        this.registerMapName(cleanStem);
+        this.addLog('info', `已通知 W152D map_server 加载地图: ${yamlUrl}`);
+        this.notify();
+        return true;
+      }
     }
+    return false;
   }
 }
 

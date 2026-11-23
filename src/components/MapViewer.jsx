@@ -7,6 +7,7 @@ import {
   RefreshCw,
   RotateCcw,
   Settings,
+  Usb,
   WifiOff,
   ZoomIn,
   ZoomOut
@@ -30,6 +31,11 @@ function getOriginYaw(orientation) {
 
 export default function MapViewer({
   status = 'disconnected',
+  connectionMode = 'w152d',
+  gatewayOnline = false,
+  driverMode = 'mavlink_serial',
+  serialPort = '/dev/ttyUSB0',
+  serialBaud = 921600,
   rosUrl = '',
   mapData,
   costmapData,
@@ -70,6 +76,8 @@ export default function MapViewer({
   const pinchStateRef = useRef(null);
 
   const connected = status === 'connected';
+  const isSerialRadarMode = connectionMode === 'w152d' && driverMode === 'mavlink_serial';
+  const navCapable = connected && !isSerialRadarMode;
   const hasMap = Boolean(mapData?.info && mapData?.data);
 
   const mapWidth = mapData?.info?.width || 0;
@@ -91,15 +99,15 @@ export default function MapViewer({
     ? originY + halfW * Math.sin(originYaw) + halfH * Math.cos(originYaw)
     : 0;
 
-  const isPoseToolActive = Boolean(connected && (isSettingInitialPose || isSettingGoalPose));
+  const isPoseToolActive = Boolean(navCapable && (isSettingInitialPose || isSettingGoalPose));
 
   useEffect(() => {
-    if (!connected) {
+    if (!navCapable) {
       setPoseDrag(null);
       setIsSettingInitialPose?.(false);
       setIsSettingGoalPose?.(false);
     }
-  }, [connected, setIsSettingInitialPose, setIsSettingGoalPose]);
+  }, [navCapable, setIsSettingInitialPose, setIsSettingGoalPose]);
 
   const handleResetView = () => {
     setScale(2.4);
@@ -347,7 +355,7 @@ export default function MapViewer({
   };
 
   const handleDoubleClick = (e) => {
-    if (!connected || isPoseToolActive || !canvasRef.current) return;
+    if (!navCapable || isPoseToolActive || !canvasRef.current) return;
     const { worldX, worldY } = pxToWorld(e.clientX, e.clientY, canvasRef.current);
     const naturalTheta = Math.atan2(worldY - (robotPose?.y || 0), worldX - (robotPose?.x || 0));
     if (rosService.setGoalPose(worldX, worldY, naturalTheta)) {
@@ -371,7 +379,7 @@ export default function MapViewer({
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // 0. Theme-adaptive backdrop + metric 1m grid
+    // 0. Theme-adaptive backdrop + metric 1m grid + origin crosshair
     ctx.fillStyle = isDark ? '#0b1120' : '#f8fafc';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -394,9 +402,21 @@ export default function MapViewer({
       ctx.stroke();
     }
 
+    // Subtle origin axes in serial radar mode
+    if (isSerialRadarMode && connected) {
+      ctx.strokeStyle = isDark ? 'rgba(56, 189, 248, 0.18)' : 'rgba(37, 99, 235, 0.14)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, cy);
+      ctx.lineTo(canvas.width, cy);
+      ctx.moveTo(cx, 0);
+      ctx.lineTo(cx, canvas.height);
+      ctx.stroke();
+    }
+
     if (!connected) return;
 
-    // 1. Blit pre-baked OccupancyGrid + Costmap texture
+    // 1. Blit OccupancyGrid + Costmap texture
     if ((layers.showMap || layers.showCostmap) && offscreenMapRef.current) {
       const offCanvas = offscreenMapRef.current;
       const drawW = offCanvas.width * scale;
@@ -461,12 +481,12 @@ export default function MapViewer({
       });
     }
 
-    // 3. Planned Path
+    // 3. Planned Path OR Odometry Trail
     if (layers.showPath && pathData && pathData.length > 0) {
       ctx.beginPath();
       ctx.strokeStyle = isDark ? '#22d3ee' : '#06b6d4';
-      ctx.lineWidth = 2.8;
-      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = isSerialRadarMode ? 2.0 : 2.8;
+      if (!isSerialRadarMode) ctx.setLineDash([5, 4]);
 
       pathData.forEach((pt, idx) => {
         const { px, py } = worldToPx(pt.x, pt.y, canvas);
@@ -523,8 +543,8 @@ export default function MapViewer({
       ctx.restore();
     }
 
-    // 6. Robot Pose Arrow
-    if (layers.showRobot && robotPose && (hasMap || scanData?.length > 0)) {
+    // 6. Robot Pose Arrow (always render when connected in serial radar mode, or when map/scan exists)
+    if (layers.showRobot && robotPose && (isSerialRadarMode || hasMap || scanData?.length > 0)) {
       const { px, py } = worldToPx(robotPose.x, robotPose.y, canvas);
       const angle = -robotPose.theta;
 
@@ -552,7 +572,7 @@ export default function MapViewer({
       ctx.restore();
     }
 
-    // 7. Interactive Pose-Vector Drag Preview
+    // 7. Pose-Vector Drag Preview
     if (poseDrag) {
       const { startPx, startPy, theta, mode } = poseDrag;
       const isInit = mode === 'initial';
@@ -594,6 +614,7 @@ export default function MapViewer({
     }
   }, [
     connected,
+    isSerialRadarMode,
     hasMap,
     scale,
     offset,
@@ -615,35 +636,46 @@ export default function MapViewer({
     poseDrag
   ]);
 
-  const promptText = isSettingInitialPose
-    ? '按住地图拖拽箭头标定初始位置与朝向'
-    : isSettingGoalPose
-      ? multiPointNav
-        ? '按住拖拽连续添加带朝向的巡航航点'
-        : '按住地图拖拽箭头设定目标点与朝向'
-      : multiPointNav
-        ? '双击地图追加巡航航点（或点「设定目标」拖拽朝向）'
-        : '双击地图快速前往（或点「设定目标」拖拽朝向）';
+  const promptText = isSerialRadarMode
+    ? '串口直连雷达与里程计实时视图（如需建图/导航请切至 ROS 2 模式）'
+    : isSettingInitialPose
+      ? '按住地图拖拽箭头标定初始位置与朝向'
+      : isSettingGoalPose
+        ? multiPointNav
+          ? '按住拖拽连续添加带朝向的巡航航点'
+          : '按住地图拖拽箭头设定目标点与朝向'
+        : multiPointNav
+          ? '双击地图追加巡航航点（或点「设定目标」拖拽朝向）'
+          : '双击地图快速前往（或点「设定目标」拖拽朝向）';
 
   const headerBadgeStatus = !connected
-    ? status === 'connecting'
+    ? status === 'connecting' || gatewayOnline
       ? 'starting'
       : 'unavailable'
-    : mappingRunning
-      ? 'running'
-      : navigationRunning
-        ? 'active'
-        : 'paused';
+    : isSerialRadarMode
+      ? 'active'
+      : mappingRunning
+        ? 'running'
+        : navigationRunning
+          ? 'active'
+          : 'paused';
 
   const headerBadgeLabel = !connected
-    ? status === 'connecting'
-      ? '连接握手中'
+    ? gatewayOnline
+      ? isSerialRadarMode
+        ? '等待串口'
+        : '等待 ROS2'
       : '未连接'
-    : mappingRunning
-      ? '建图中'
-      : navigationRunning
-        ? '导航就绪'
-        : '待机';
+    : isSerialRadarMode
+      ? '串口雷达直通'
+      : mappingRunning
+        ? '建图中'
+        : navigationRunning
+          ? '导航就绪'
+          : '待机';
+
+  const showEmptyOverlay =
+    !connected || (!isSerialRadarMode && !hasMap && (!scanData || scanData.length === 0));
 
   return (
     <Card
@@ -653,7 +685,7 @@ export default function MapViewer({
       bodyClassName="relative flex flex-1 min-h-0 flex-col"
       title={
         <div className="flex flex-wrap items-center gap-2">
-          <span>SLAM 栅格地图</span>
+          <span>{isSerialRadarMode ? '实时雷达与里程计画布' : 'SLAM 栅格地图'}</span>
           <StatusBadge
             status={headerBadgeStatus}
             label={headerBadgeLabel}
@@ -673,32 +705,38 @@ export default function MapViewer({
       }
       extra={
         <div className="flex items-center gap-1.5">
-          <Tooltip content="放大地图">
+          <Tooltip content="放大视图">
             <Button
               size="icon-sm"
               variant="outline"
-              aria-label="放大地图"
+              aria-label="放大视图"
               onClick={() => setScale((s) => Math.min(s * 1.2, 12.0))}
             >
               <ZoomIn className="h-3.5 w-3.5" />
             </Button>
           </Tooltip>
 
-          <Tooltip content="缩小地图">
+          <Tooltip content="缩小视图">
             <Button
               size="icon-sm"
               variant="outline"
-              aria-label="缩小地图"
+              aria-label="缩小视图"
               onClick={() => setScale((s) => Math.max(s * 0.8, 0.5))}
             >
               <ZoomOut className="h-3.5 w-3.5" />
             </Button>
           </Tooltip>
 
-          <Tooltip content="在地图上按住拖拽箭头，设定带精确朝向角的目标位姿">
+          <Tooltip
+            content={
+              isSerialRadarMode
+                ? '定点导航需在右侧切换为「本机 ROS 2 导航」模式'
+                : '在地图上按住拖拽箭头，设定带精确朝向角的目标位姿'
+            }
+          >
             <Button
               size="xs"
-              disabled={!connected}
+              disabled={!navCapable}
               variant={isSettingGoalPose ? 'primary' : 'outline'}
               leftIcon={<Crosshair className="h-3.5 w-3.5" />}
               onClick={() => {
@@ -711,10 +749,16 @@ export default function MapViewer({
             </Button>
           </Tooltip>
 
-          <Tooltip content="在地图上按住拖拽箭头，标定机器人当前初始位置与朝向 (/initialpose)">
+          <Tooltip
+            content={
+              isSerialRadarMode
+                ? 'AMCL 初始位姿需在右侧切换为「本机 ROS 2 导航」模式'
+                : '在地图上按住拖拽箭头，标定机器人当前初始位置与朝向'
+            }
+          >
             <Button
               size="xs"
-              disabled={!connected}
+              disabled={!navCapable}
               variant={isSettingInitialPose ? 'primary' : 'warning'}
               leftIcon={<Compass className="h-3.5 w-3.5" />}
               onClick={() => {
@@ -750,21 +794,33 @@ export default function MapViewer({
         }}
         className="relative flex-1 min-h-72 w-full overflow-hidden bg-[var(--abc-bg-muted)]"
       >
-        {/* Top-Left Map Metadata Pill */}
+        {/* Top-Left Metadata Pill */}
         <div className="pointer-events-none absolute top-2.5 left-2.5 z-10 flex items-center gap-2 rounded-[var(--abc-radius-md)] border border-[var(--abc-border)] bg-[var(--abc-bg-surface)]/92 px-2.5 py-1 text-[11px] font-mono text-[var(--abc-fg-muted)] shadow-xs backdrop-blur-xs">
           <span>
-            {hasMap ? `${mapWidth}×${mapHeight} (${resolution}m/px)` : '等待 /map 话题'}
+            {hasMap
+              ? `${mapWidth}×${mapHeight} (${resolution}m/px)`
+              : isSerialRadarMode
+                ? `1m 标尺网格 · 雷达 ${scanData?.length || 0} 点`
+                : '等待 /map 话题'}
           </span>
           <span>·</span>
           <span>{Math.round(scale * 100)}%</span>
         </div>
 
-        {/* Center Interaction Prompt Pill (only when connected & map available) */}
-        {connected && hasMap && (
+        {/* Center Interaction Prompt Pill */}
+        {connected && (isSerialRadarMode || hasMap) && (
           <div className="pointer-events-none absolute top-2.5 left-1/2 z-10 -translate-x-1/2 hidden sm:flex">
             <StatusTag
               size="sm"
-              tone={isSettingInitialPose ? 'warning' : isSettingGoalPose ? 'purple' : 'primary'}
+              tone={
+                isSerialRadarMode
+                  ? 'teal'
+                  : isSettingInitialPose
+                    ? 'warning'
+                    : isSettingGoalPose
+                      ? 'purple'
+                      : 'primary'
+              }
               icon={<MapPin className="h-3.5 w-3.5" />}
               dot={false}
             >
@@ -773,21 +829,29 @@ export default function MapViewer({
           </div>
         )}
 
-        {/* Top-Right Telemetry & Navigation Progress HUD */}
+        {/* Top-Right Telemetry HUD */}
         <div className="pointer-events-none absolute top-2.5 right-2.5 z-10 min-w-36 space-y-1.5 rounded-[var(--abc-radius-lg)] border border-[var(--abc-border)] bg-[var(--abc-bg-surface)]/92 px-3 py-2 text-xs shadow-xs backdrop-blur-xs">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-[var(--abc-fg-muted)]">剩余距离</span>
-            <span className="font-mono font-semibold tabular-nums text-[var(--abc-fg)]">
-              {connected ? `${(remainingDistance || 0).toFixed(2)} m` : '--'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-[var(--abc-fg-muted)]">预计到达</span>
-            <span className="font-mono font-semibold tabular-nums text-[var(--abc-fg)]">
-              {connected ? `${(estimatedTime || 0).toFixed(1)} s` : '--'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-3 border-t border-[var(--abc-border)] pt-1 text-[11px]">
+          {!isSerialRadarMode && (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[var(--abc-fg-muted)]">剩余距离</span>
+                <span className="font-mono font-semibold tabular-nums text-[var(--abc-fg)]">
+                  {connected ? `${(remainingDistance || 0).toFixed(2)} m` : '--'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[var(--abc-fg-muted)]">预计到达</span>
+                <span className="font-mono font-semibold tabular-nums text-[var(--abc-fg)]">
+                  {connected ? `${(estimatedTime || 0).toFixed(1)} s` : '--'}
+                </span>
+              </div>
+            </>
+          )}
+          <div
+            className={`flex items-center justify-between gap-3 text-[11px] ${
+              !isSerialRadarMode ? 'border-t border-[var(--abc-border)] pt-1' : ''
+            }`}
+          >
             <span className="text-[var(--abc-fg-muted)]">位姿 (X,Y,θ)</span>
             <span className="font-mono tabular-nums text-[var(--abc-fg-secondary)]">
               {connected
@@ -797,16 +861,36 @@ export default function MapViewer({
           </div>
         </div>
 
-        {/* Disconnected or Waiting-for-Map Overlay */}
-        {(!connected || (!hasMap && (!scanData || scanData.length === 0))) && (
+        {/* Empty / Waiting Diagnostic Overlay */}
+        {showEmptyOverlay && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-6">
             <div className="pointer-events-auto max-w-sm rounded-[var(--abc-radius-xl)] border border-[var(--abc-border)] bg-[var(--abc-bg-surface)]/95 p-4 shadow-md backdrop-blur-xs">
-              {!connected ? (
+              {connectionMode === 'w152d' && gatewayOnline && isSerialRadarMode ? (
+                <EmptyState
+                  compact
+                  icon={<Usb className="h-6 w-6 text-[var(--abc-primary)]" />}
+                  title={`等待下位机串口就绪 (${serialPort})`}
+                  description={`W152D 网关在线，正在监听 ${serialPort} @ ${serialBaud} bps。请确认小车 USB 线已连接且 w152d-usb-serial 守护进程已启动。`}
+                />
+              ) : connectionMode === 'w152d' && gatewayOnline && !isSerialRadarMode && !connected ? (
+                <EmptyState
+                  compact
+                  icon={<MapIcon className="h-6 w-6 text-[var(--abc-primary)]" />}
+                  title="正在初始化本机 ROS 2 桥接节点..."
+                  description="可在右侧「W152D 机载直连控制」面板一键启动串口底盘驱动、SLAM 建图或 Nav2 导航。"
+                />
+              ) : !connected ? (
                 <EmptyState
                   compact
                   icon={<WifiOff className="h-6 w-6 text-[var(--abc-fg-muted)]" />}
-                  title={status === 'connecting' ? '正在连接 ROS Bridge...' : 'ROS Bridge 未连接'}
-                  description={`目标地址: ${rosUrl || '未配置'}。请确认机器人端已启动 rosbridge_websocket，系统将在后台自动退避重连。`}
+                  title={
+                    connectionMode === 'w152d' ? 'W152D 直连网关未连接' : 'Rosbridge 未连接'
+                  }
+                  description={
+                    connectionMode === 'w152d'
+                      ? '请确认本项目的服务端进程已在 W152D 上运行，或在「连接配置」中填入 W152D 的 IP:8081 地址。'
+                      : `目标地址: ${rosUrl}。请确认远端已启动 rosbridge_websocket。`
+                  }
                   action={
                     <div className="flex items-center justify-center gap-2">
                       <Button
@@ -834,15 +918,15 @@ export default function MapViewer({
                 <EmptyState
                   compact
                   icon={<MapIcon className="h-6 w-6 text-[var(--abc-primary)]" />}
-                  title="已连接，等待 /map 栅格地图数据"
-                  description="ROS Bridge 通信正常，请确认机器人端已启动 map_server (Nav2) 或 slam_toolbox 建图节点。"
+                  title="本机 ROS 2 已就绪，等待 /map 栅格地图"
+                  description="请在右侧「W152D 机载直连控制」面板启动「串口底盘驱动」与「SLAM 激光建图」或「Nav2 自主导航」。"
                 />
               )}
             </div>
           </div>
         )}
 
-        {/* SLAM Canvas */}
+        {/* Canvas */}
         <canvas
           ref={canvasRef}
           onPointerDown={handlePointerDown}

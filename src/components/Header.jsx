@@ -4,6 +4,7 @@ import {
   BatteryCharging,
   BatteryLow,
   BatteryMedium,
+  Cpu,
   Link2,
   RefreshCw,
   Settings,
@@ -18,6 +19,7 @@ import {
   Input,
   Popover,
   ProgressBar,
+  SegmentedControl,
   Select,
   StatusBadge,
   StatusTag,
@@ -28,8 +30,12 @@ import { rosService } from '../services/rosService';
 
 export default function Header({
   status,
-  rosUrl,
-  videoUrl,
+  connectionMode = 'w152d',
+  gatewayOnline = false,
+  driverMode = 'mavlink_serial',
+  gatewayUrl = '',
+  rosUrl = 'ws://192.168.2.88:9090',
+  videoUrl = '',
   rosProtocol = 'auto',
   detectedProtocol = 'ros2',
   onSaveSettings,
@@ -42,30 +48,36 @@ export default function Header({
   const showSettingsModal = externalSettingsOpen ?? internalSettingsOpen;
   const setShowSettingsModal = onSettingsOpenChange ?? setInternalSettingsOpen;
 
+  const [tempConnMode, setTempConnMode] = useState(connectionMode);
+  const [tempGatewayUrl, setTempGatewayUrl] = useState(gatewayUrl);
   const [tempRosUrl, setTempRosUrl] = useState(rosUrl);
   const [tempVideoUrl, setTempVideoUrl] = useState(videoUrl);
   const [tempProtocol, setTempProtocol] = useState(rosProtocol);
 
   const openSettings = () => {
-    setTempRosUrl(rosUrl);
-    setTempVideoUrl(videoUrl);
+    setTempConnMode(connectionMode || 'w152d');
+    setTempGatewayUrl(gatewayUrl || '');
+    setTempRosUrl(rosUrl || 'ws://192.168.2.88:9090');
+    setTempVideoUrl(videoUrl || '');
     setTempProtocol(rosProtocol || 'auto');
     setShowSettingsModal(true);
   };
 
   const handleConnect = (e) => {
     e?.preventDefault?.();
-    const nextRos = tempRosUrl.trim();
-    const nextVideo = tempVideoUrl.trim();
-    if (!nextRos) return;
-
     onSaveSettings({
-      rosUrl: nextRos,
-      videoUrl: nextVideo,
+      connectionMode: tempConnMode,
+      gatewayUrl: tempGatewayUrl.trim(),
+      rosUrl: tempRosUrl.trim() || 'ws://192.168.2.88:9090',
+      videoUrl: tempVideoUrl.trim(),
       rosProtocol: tempProtocol
     });
     setShowSettingsModal(false);
-    toast.info(`正在连接至 ${nextRos}`);
+    toast.info(
+      tempConnMode === 'w152d'
+        ? `已应用 W152D 上位机直连配置 (${tempGatewayUrl.trim() || '同源自动探测'})`
+        : `正在连接 Rosbridge: ${tempRosUrl.trim()}`
+    );
   };
 
   const hasBattery = Boolean(battery && typeof battery.percentage === 'number');
@@ -91,18 +103,28 @@ export default function Header({
   };
 
   const mappedStatus =
-    status === 'connecting'
-      ? 'starting'
-      : status === 'connected'
-        ? 'active'
+    status === 'connected'
+      ? 'active'
+      : status === 'connecting' || gatewayOnline
+        ? 'starting'
         : 'unavailable';
 
   const statusLabel =
-    status === 'connecting'
-      ? '连接中'
+    connectionMode === 'w152d'
+      ? status === 'connected'
+        ? driverMode === 'mavlink_serial'
+          ? 'W152D · 串口已连'
+          : 'W152D · ROS2已连'
+        : gatewayOnline
+          ? driverMode === 'mavlink_serial'
+            ? 'W152D · 待插串口'
+            : 'W152D · 待启ROS2'
+          : 'W152D · 网关离线'
       : status === 'connected'
         ? `已连接 · ${detectedProtocol.toUpperCase()}`
-        : '未连接';
+        : status === 'connecting'
+          ? '连接中'
+          : '未连接';
 
   return (
     <>
@@ -150,11 +172,6 @@ export default function Header({
                   }
                 ]}
               />
-              {!hasBattery && (
-                <div className="text-[11px] leading-relaxed text-[var(--abc-fg-muted)]">
-                  尚未收到 <code>/battery_state</code> 话题数据。连接机器人并发布电源状态后自动刷新。
-                </div>
-              )}
             </div>
           }
         >
@@ -173,23 +190,23 @@ export default function Header({
           </Button>
         </Popover>
 
-        {/* ROS Connection StatusBadge */}
+        {/* Connection StatusBadge */}
         <StatusBadge
           status={mappedStatus}
           label={statusLabel}
           pulse={status === 'connecting'}
         />
 
-        {/* Quick Reconnect Action when disconnected */}
-        {status === 'disconnected' && (
-          <Tooltip content={`立即重连 ${rosUrl}`}>
+        {/* Quick Reconnect Action when offline */}
+        {status === 'disconnected' && !gatewayOnline && (
+          <Tooltip content="立即重新连接上位机网关">
             <Button
               size="xs"
               variant="secondary"
               leftIcon={<RefreshCw className="h-3 w-3" />}
               onClick={() => {
                 rosService.reconnect();
-                toast.info(`正在尝试重连 ${rosUrl}`);
+                toast.info('正在重新握手连接...');
               }}
             >
               <span className="hidden sm:inline">重连</span>
@@ -200,24 +217,24 @@ export default function Header({
         <Divider orientation="vertical" className="hidden sm:inline-block" />
 
         {/* Connection Settings Button */}
-        <Tooltip content="配置 ROS 协议栈、WebSocket 端点与摄像头流地址">
+        <Tooltip content="切换 W152D 直连网关 / 外部 Rosbridge 与摄像头流地址">
           <Button
             size="xs"
             variant="outline"
             leftIcon={<Settings className="h-3.5 w-3.5" />}
             onClick={openSettings}
           >
-            <span className="hidden md:inline">连接配置</span>
+            <span className="hidden sm:inline">连接配置</span>
           </Button>
         </Tooltip>
       </div>
 
-      {/* 3-field Connection Settings Dialog */}
+      {/* Connection Mode & Stream Settings Dialog */}
       <Dialog
         open={showSettingsModal}
         onClose={() => setShowSettingsModal(false)}
-        title="机器人通信与视频流配置"
-        description="支持 ROS 2 (Nav2) 与 ROS 1 (move_base) 双协议自动识别、断线退避重连及机载 HTTP / RTSP 视频流接入"
+        title="上位机通信与视频流配置"
+        description="默认适配 W152D 上位机 USB 串口 / 本机 ROS 2 直连架构（无需 ros-agent 或 9090 转发端口）"
         size="md"
         fullscreenable={false}
         footer={
@@ -226,53 +243,85 @@ export default function Header({
               取消
             </Button>
             <Button size="sm" variant="primary" onClick={handleConnect}>
-              保存并重连
+              保存并生效
             </Button>
           </>
         }
       >
         <form onSubmit={handleConnect} className="space-y-4">
-          <FormField
-            label="ROS 协议栈与导航契约版本"
-            helperText="自动探测将通过 rosbridge 话题图自动匹配 ROS 2 (/goal_pose, /plan) 或 ROS 1 (/move_base_simple/goal)"
-          >
-            <Select
+          <FormField label="上位机接入架构模式">
+            <SegmentedControl
+              block
               size="sm"
-              value={tempProtocol}
-              onChange={(val) => setTempProtocol(String(val || 'auto'))}
+              value={tempConnMode}
+              onChange={(val) => setTempConnMode(val)}
               options={[
-                { value: 'auto', label: '自动探测 (推荐，兼容 ROS 2 Nav2 与 ROS 1)' },
-                { value: 'ros2', label: '强制 ROS 2 (Nav2 · pkg/msg/Type)' },
-                { value: 'ros1', label: '强制 ROS 1 (move_base · pkg/Type)' }
+                {
+                  value: 'w152d',
+                  label: 'W152D 上位机直连 (推荐)',
+                  icon: <Cpu className="h-3.5 w-3.5" />
+                },
+                {
+                  value: 'rosbridge',
+                  label: '外部 Rosbridge WS (:9090)',
+                  icon: <Link2 className="h-3.5 w-3.5" />
+                }
               ]}
             />
           </FormField>
 
-          <FormField
-            label="ROS Bridge WebSocket 地址"
-            required
-            helperText="示例: ws://192.168.2.88:9090 或 ws://localhost:9090（断线后将自动退避重连）"
-          >
-            <Input
-              size="sm"
-              value={tempRosUrl}
-              onChange={(e) => setTempRosUrl(e.target.value)}
-              placeholder="ws://192.168.2.88:9090"
-              prefix={<Link2 className="h-3.5 w-3.5 text-[var(--abc-fg-muted)]" />}
-              allowClear
-              required
-            />
-          </FormField>
+          {tempConnMode === 'w152d' ? (
+            <FormField
+              label="W152D 网关地址（同机部署留空即可）"
+              helperText="若网页直接部署在 W152D 上请留空（自动走同源 /api/bot）；若在电脑本地调试远端 W152D，可填如 http://192.168.2.88:8081"
+            >
+              <Input
+                size="sm"
+                value={tempGatewayUrl}
+                onChange={(e) => setTempGatewayUrl(e.target.value)}
+                placeholder="留空自动探测同源，或填 http://192.168.2.88:8081"
+                prefix={<Cpu className="h-3.5 w-3.5 text-[var(--abc-fg-muted)]" />}
+                allowClear
+              />
+            </FormField>
+          ) : (
+            <>
+              <FormField label="ROS 协议栈版本">
+                <Select
+                  size="sm"
+                  value={tempProtocol}
+                  onChange={(val) => setTempProtocol(String(val || 'auto'))}
+                  options={[
+                    { value: 'auto', label: '自动探测 (ROS 2 Nav2 / ROS 1)' },
+                    { value: 'ros2', label: '强制 ROS 2 (Nav2)' },
+                    { value: 'ros1', label: '强制 ROS 1 (move_base)' }
+                  ]}
+                />
+              </FormField>
+
+              <FormField label="外部 Rosbridge WebSocket 地址" required>
+                <Input
+                  size="sm"
+                  value={tempRosUrl}
+                  onChange={(e) => setTempRosUrl(e.target.value)}
+                  placeholder="ws://192.168.2.88:9090"
+                  prefix={<Link2 className="h-3.5 w-3.5 text-[var(--abc-fg-muted)]" />}
+                  allowClear
+                  required
+                />
+              </FormField>
+            </>
+          )}
 
           <FormField
             label="机载摄像头视频流地址 (HTTP / MJPEG / RTSP)"
-            helperText="原生 rtsp:// 流将自动通过内置 FFmpeg 代理转码为低延迟 MJPEG 预览"
+            helperText="支持直连小车 ESP32-CAM HTTP 流、RTSP 相机，或填入 /api/bot/camera.mjpeg 订阅本机 ROS 相机话题"
           >
             <Input
               size="sm"
               value={tempVideoUrl}
               onChange={(e) => setTempVideoUrl(e.target.value)}
-              placeholder="http://192.168.2.165:81 或 rtsp://192.168.2.88:554/live"
+              placeholder="http://192.168.2.165:81 或 /api/bot/camera.mjpeg"
               prefix={<Video className="h-3.5 w-3.5 text-[var(--abc-fg-muted)]" />}
               allowClear
             />
